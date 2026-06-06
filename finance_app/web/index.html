@@ -25,6 +25,12 @@
             <input id="asOfInput" type="date" />
           </label>
           <label>
+            投資組合
+            <select id="portfolioFilter">
+              <option value="All">全部</option>
+            </select>
+          </label>
+          <label>
             起日
             <input id="startInput" type="date" />
           </label>
@@ -71,6 +77,7 @@
                   <th>均價</th>
                   <th>現價</th>
                   <th>市值</th>
+                  <th>占比</th>
                   <th>未實現</th>
                   <th>配息</th>
                 </tr>
@@ -78,6 +85,13 @@
               <tbody id="positionsBody"></tbody>
             </table>
           </div>
+        </section>
+
+        <section class="allocation-panel">
+          <header>
+            <h2>持股占比</h2>
+          </header>
+          <div id="allocationGrid" class="allocation-grid"></div>
         </section>
       </section>
 
@@ -96,6 +110,10 @@
             <label>
               股票代號
               <input name="symbol" type="text" placeholder="2330.TW" required />
+            </label>
+            <label>
+              投資組合
+              <input name="portfolio" type="text" list="portfolioOptions" value="General" required />
             </label>
             <label>
               方向
@@ -133,6 +151,10 @@
               <input name="symbol" type="text" placeholder="AAPL" required />
             </label>
             <label>
+              投資組合
+              <input name="portfolio" type="text" list="portfolioOptions" value="General" required />
+            </label>
+            <label>
               配息總額
               <input name="gross_amount" type="number" min="0" step="0.0001" required />
             </label>
@@ -146,6 +168,7 @@
             </label>
             <button class="primary" type="submit">新增配息</button>
           </form>
+          <datalist id="portfolioOptions"></datalist>
         </section>
 
         <section class="table-panel compact">
@@ -158,6 +181,7 @@
                 <tr>
                   <th>日期</th>
                   <th>股票</th>
+                  <th>投組</th>
                   <th>類型</th>
                   <th>金額</th>
                   <th></th>

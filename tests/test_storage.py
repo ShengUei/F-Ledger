@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 
 from finance_app.models import Dividend, Trade
 from finance_app.storage import CSVStore
@@ -21,6 +22,7 @@ class CSVStoreTests(unittest.TestCase):
                     price=100,
                     fees=1.5,
                     notes="first lot",
+                    portfolio="Active",
                 )
             )
             dividend = store.add_dividend(
@@ -31,6 +33,7 @@ class CSVStoreTests(unittest.TestCase):
                     gross_amount=12,
                     tax=2,
                     notes="cash dividend",
+                    portfolio="Active",
                 )
             )
 
@@ -39,8 +42,10 @@ class CSVStoreTests(unittest.TestCase):
             self.assertEqual(len(reloaded.list_dividends()), 1)
             self.assertEqual(reloaded.list_trades()[0].id, trade.id)
             self.assertEqual(reloaded.list_trades()[0].symbol, "AAPL")
+            self.assertEqual(reloaded.list_trades()[0].portfolio, "Active")
             self.assertEqual(reloaded.list_dividends()[0].id, dividend.id)
             self.assertEqual(reloaded.list_dividends()[0].gross_amount, 12)
+            self.assertEqual(reloaded.list_dividends()[0].portfolio, "Active")
 
     def test_delete_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -61,6 +66,28 @@ class CSVStoreTests(unittest.TestCase):
             self.assertTrue(store.delete_trade(trade.id))
             self.assertFalse(store.delete_trade(trade.id))
             self.assertEqual(store.list_trades(), [])
+
+    def test_existing_csv_without_portfolio_is_migrated(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            data_dir.mkdir(exist_ok=True)
+            (data_dir / "trades.csv").write_text(
+                "id,date,symbol,side,quantity,price,fees,notes\n"
+                "t1,2024-01-02,GOOG,BUY,1,100,0,old row\n",
+                encoding="utf-8",
+            )
+            (data_dir / "dividends.csv").write_text(
+                "id,date,symbol,gross_amount,tax,notes\n"
+                "d1,2024-02-01,GOOG,3,0,old dividend\n",
+                encoding="utf-8",
+            )
+
+            store = CSVStore(temp_dir)
+
+            self.assertEqual(store.list_trades()[0].portfolio, "General")
+            self.assertEqual(store.list_dividends()[0].portfolio, "General")
+            self.assertIn("portfolio", (data_dir / "trades.csv").read_text(encoding="utf-8").splitlines()[0])
+            self.assertIn("portfolio", (data_dir / "dividends.csv").read_text(encoding="utf-8").splitlines()[0])
 
 
 if __name__ == "__main__":

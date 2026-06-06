@@ -92,7 +92,8 @@ select {
 .metric-grid,
 .chart-panel,
 .table-panel,
-.form-panel {
+.form-panel,
+.allocation-panel {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -252,6 +253,74 @@ svg {
   padding: 14px;
 }
 
+.allocation-panel {
+  padding: 14px;
+}
+
+.allocation-panel header {
+  margin-bottom: 10px;
+}
+
+.allocation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 18px 24px;
+}
+
+.allocation-group {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.allocation-group h3 {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.allocation-group h3 span {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.allocation-row {
+  display: grid;
+  grid-template-columns: minmax(68px, 0.5fr) minmax(120px, 1fr) 56px;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-size: 13px;
+}
+
+.allocation-symbol {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.allocation-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.allocation-fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 8px;
+  background: var(--blue);
+}
+
+.allocation-percent {
+  color: var(--muted);
+  text-align: right;
+}
+
 .table-wrap {
   width: 100%;
   overflow: auto;
@@ -281,8 +350,10 @@ th:first-child,
 td:first-child,
 th:nth-child(2),
 td:nth-child(2),
-th:nth-child(3),
-td:nth-child(3) {
+  th:nth-child(3),
+td:nth-child(3),
+th:nth-child(4),
+td:nth-child(4) {
   text-align: left;
 }
 
@@ -383,6 +454,10 @@ tr:last-child td {
   }
 
   .record-form {
+    grid-template-columns: 1fr;
+  }
+
+  .allocation-grid {
     grid-template-columns: 1fr;
   }
 }

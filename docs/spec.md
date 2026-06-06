@@ -30,6 +30,7 @@ selected date range.
 | quantity | decimal | positive share quantity |
 | price | decimal | unit price |
 | fees | decimal | transaction fee, default 0 |
+| portfolio | string | investment portfolio name, default `General` |
 | notes | string | optional |
 
 ### `dividends.csv`
@@ -41,6 +42,7 @@ selected date range.
 | symbol | string | stock ticker, normalized uppercase |
 | gross_amount | decimal | total dividend amount before tax |
 | tax | decimal | withholding or other tax, default 0 |
+| portfolio | string | investment portfolio name, default `General` |
 | notes | string | optional |
 
 ### Price Cache
@@ -87,8 +89,10 @@ before the valuation date as a fallback and returns a warning.
 | DELETE | `/api/trades/{id}` | deletes a trade |
 | POST | `/api/dividends` | creates a dividend |
 | DELETE | `/api/dividends/{id}` | deletes a dividend |
-| GET | `/api/summary?as_of=YYYY-MM-DD` | returns portfolio summary |
-| GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly` | returns performance series and annual bars |
+| GET | `/api/portfolios` | returns available portfolio names |
+| GET | `/api/summary?as_of=YYYY-MM-DD&portfolio=Active` | returns all-portfolio or selected-portfolio summary |
+| GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly&portfolio=Active` | returns filtered performance series and annual bars |
+| GET | `/api/allocation?as_of=YYYY-MM-DD` | returns overall and per-portfolio holding weights |
 
 ## Acceptance Scenarios
 
@@ -98,3 +102,6 @@ before the valuation date as a fallback and returns a warning.
 4. A user can select a date range and interval to inspect performance.
 5. A user can inspect yearly performance bars for multi-year records.
 6. The app can run locally with `python -m finance_app`.
+7. A user can assign records to portfolios such as `Active` or `DCA`.
+8. A user can view all-stock performance or performance for one portfolio.
+9. A user can view holding allocation for the full account and for each portfolio.

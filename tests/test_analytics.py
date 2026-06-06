@@ -64,6 +64,48 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertAlmostEqual(result["annual"][0]["ending_market_value"], 150.0, places=2)
         self.assertAlmostEqual(result["annual"][1]["ending_market_value"], 600.0, places=2)
 
+    def test_summary_can_filter_portfolio_and_reports_position_weight(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", "Active"),
+            Trade("", date(2024, 1, 3), "GOOG", "BUY", 5, 80, 0, "", "DCA"),
+            Trade("", date(2024, 1, 4), "MSFT", "BUY", 5, 50, 0, "", "Active"),
+        ]
+        dividends = [
+            Dividend("", date(2024, 2, 1), "GOOG", 10, 0, "", "DCA"),
+        ]
+        prices = {
+            "GOOG": {date(2024, 12, 31): 120},
+            "MSFT": {date(2024, 12, 31): 100},
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        all_summary = analytics.summary(trades, dividends, date(2024, 12, 31))
+        active_summary = analytics.summary(trades, dividends, date(2024, 12, 31), portfolio="Active")
+
+        self.assertAlmostEqual(all_summary["market_value"], 2300.0, places=2)
+        self.assertAlmostEqual(active_summary["market_value"], 1700.0, places=2)
+        self.assertEqual(active_summary["portfolio"], "Active")
+        self.assertEqual([position["symbol"] for position in active_summary["positions"]], ["GOOG", "MSFT"])
+        self.assertAlmostEqual(active_summary["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
+
+    def test_allocation_returns_overall_and_each_portfolio(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", "Active"),
+            Trade("", date(2024, 1, 3), "GOOG", "BUY", 5, 80, 0, "", "DCA"),
+            Trade("", date(2024, 1, 4), "MSFT", "BUY", 5, 50, 0, "", "Active"),
+        ]
+        prices = {
+            "GOOG": {date(2024, 12, 31): 120},
+            "MSFT": {date(2024, 12, 31): 100},
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.allocation(trades, [], date(2024, 12, 31))
+
+        self.assertEqual([item["portfolio"] for item in result["portfolios"]], ["Active", "DCA"])
+        self.assertAlmostEqual(result["overall"]["positions"][0]["allocation_pct"], 1800 / 2300, places=6)
+        self.assertAlmostEqual(result["portfolios"][0]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

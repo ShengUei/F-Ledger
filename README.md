@@ -11,6 +11,9 @@ loaded from Yahoo Finance through its public chart endpoint.
 - View current holdings, realized gain, dividends, market value, and total gain.
 - Chart portfolio value, total gain, dividends, and yearly performance.
 - Query performance for any date range.
+- Assign trades and dividends to portfolios such as `Active` or `DCA`.
+- Filter performance by one portfolio or view all portfolios together.
+- View holding allocation for the full account and for each portfolio.
 - No database, Redis, ELK, or external service is required.
 
 ## Quick Start
@@ -33,6 +36,9 @@ CSV files are created under `data/` by default:
 - `data/trades.csv`
 - `data/dividends.csv`
 - `data/price_cache/*.csv`
+
+Trades and dividends include a `portfolio` column. Existing CSV files without
+that column are migrated automatically and assigned to `General`.
 
 ## Tests
 

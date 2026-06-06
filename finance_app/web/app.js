@@ -1,8 +1,10 @@
 const state = {
   interval: "monthly",
+  portfolios: [],
   records: { trades: [], dividends: [] },
   summary: null,
   performance: { points: [], annual: [] },
+  allocation: null,
 };
 
 const colors = {
@@ -35,7 +37,7 @@ function setDefaultDates() {
 
 function bindEvents() {
   byId("refreshButton").addEventListener("click", refreshAll);
-  ["asOfInput", "startInput", "endInput"].forEach((id) => byId(id).addEventListener("change", refreshAll));
+  ["asOfInput", "startInput", "endInput", "portfolioFilter"].forEach((id) => byId(id).addEventListener("change", refreshAll));
 
   document.querySelectorAll("[data-interval]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -61,11 +63,18 @@ function bindEvents() {
 async function refreshAll() {
   setStatus("更新中");
   try {
-    await Promise.all([refreshRecords(), refreshSummary(), refreshPerformance()]);
+    await refreshPortfolios();
+    await Promise.all([refreshRecords(), refreshSummary(), refreshPerformance(), refreshAllocation()]);
     setStatus("已更新");
   } catch (error) {
     setStatus(error.message || "更新失敗");
   }
+}
+
+async function refreshPortfolios() {
+  const payload = await apiGet("/api/portfolios");
+  state.portfolios = payload.portfolios || [];
+  renderPortfolioOptions();
 }
 
 async function refreshRecords() {
@@ -75,7 +84,7 @@ async function refreshRecords() {
 
 async function refreshSummary() {
   const asOf = byId("asOfInput").value;
-  state.summary = await apiGet(`/api/summary?as_of=${encodeURIComponent(asOf)}`);
+  state.summary = await apiGet(`/api/summary?as_of=${encodeURIComponent(asOf)}${portfolioQuery()}`);
   renderSummary();
 }
 
@@ -83,9 +92,15 @@ async function refreshPerformance() {
   const start = byId("startInput").value;
   const end = byId("endInput").value;
   state.performance = await apiGet(
-    `/api/performance?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&interval=${state.interval}`,
+    `/api/performance?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&interval=${state.interval}${portfolioQuery()}`,
   );
   renderPerformance();
+}
+
+async function refreshAllocation() {
+  const asOf = byId("asOfInput").value;
+  state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}`);
+  renderAllocation();
 }
 
 async function submitTrade(event) {
@@ -98,6 +113,7 @@ async function submitTrade(event) {
   await apiPost("/api/trades", payload);
   form.reset();
   form.elements.date.value = byId("asOfInput").value;
+  form.elements.portfolio.value = selectedPortfolioForForm();
   form.elements.fees.value = "0";
   await refreshAll();
 }
@@ -111,6 +127,7 @@ async function submitDividend(event) {
   await apiPost("/api/dividends", payload);
   form.reset();
   form.elements.date.value = byId("asOfInput").value;
+  form.elements.portfolio.value = selectedPortfolioForForm();
   form.elements.tax.value = "0";
   await refreshAll();
 }
@@ -141,12 +158,13 @@ function renderSummary() {
           <td>${money(row.average_cost)}</td>
           <td>${money(row.last_price)}</td>
           <td>${money(row.market_value)}</td>
+          <td>${pct(row.allocation_pct)}</td>
           <td class="${classFor(row.unrealized_gain)}">${signedMoney(row.unrealized_gain)}</td>
           <td>${money(row.dividends)}</td>
         </tr>`,
         )
         .join("")
-    : `<tr><td class="empty" colspan="7">尚無持股</td></tr>`;
+    : `<tr><td class="empty" colspan="8">尚無持股</td></tr>`;
 
   if (summary.warnings && summary.warnings.length) {
     setStatus(summary.warnings.join(" "));
@@ -157,6 +175,7 @@ function renderRecords() {
   const trades = (state.records.trades || []).map((trade) => ({
     date: trade.date,
     symbol: trade.symbol,
+    portfolio: trade.portfolio,
     type: trade.side === "BUY" ? "買進" : "賣出",
     amount: trade.quantity * trade.price + Number(trade.fees || 0),
     id: trade.id,
@@ -165,6 +184,7 @@ function renderRecords() {
   const dividends = (state.records.dividends || []).map((dividend) => ({
     date: dividend.date,
     symbol: dividend.symbol,
+    portfolio: dividend.portfolio,
     type: "配息",
     amount: dividend.net_amount,
     id: dividend.id,
@@ -179,17 +199,70 @@ function renderRecords() {
         <tr>
           <td>${escapeHtml(row.date)}</td>
           <td>${escapeHtml(row.symbol)}</td>
+          <td>${escapeHtml(row.portfolio)}</td>
           <td>${escapeHtml(row.type)}</td>
           <td>${money(row.amount)}</td>
           <td><button class="danger" type="button" data-delete-kind="${row.kind}" data-delete-id="${row.id}">刪除</button></td>
         </tr>`,
         )
         .join("")
-    : `<tr><td class="empty" colspan="5">尚無紀錄</td></tr>`;
+    : `<tr><td class="empty" colspan="6">尚無紀錄</td></tr>`;
 
   document.querySelectorAll("[data-delete-id]").forEach((button) => {
     button.addEventListener("click", () => deleteRecord(button.dataset.deleteKind, button.dataset.deleteId));
   });
+}
+
+function renderPortfolioOptions() {
+  const select = byId("portfolioFilter");
+  const current = select.value || "All";
+  const portfolios = state.portfolios.length ? state.portfolios : ["General"];
+  select.innerHTML = `<option value="All">全部</option>${portfolios
+    .map((portfolio) => `<option value="${escapeHtml(portfolio)}">${escapeHtml(portfolio)}</option>`)
+    .join("")}`;
+  select.value = portfolios.includes(current) || current === "All" ? current : "All";
+  byId("portfolioOptions").innerHTML = portfolios
+    .map((portfolio) => `<option value="${escapeHtml(portfolio)}"></option>`)
+    .join("");
+  document.querySelectorAll("form input[name='portfolio']").forEach((input) => {
+    if (!input.value) {
+      input.value = select.value === "All" ? "General" : select.value;
+    }
+  });
+}
+
+function renderAllocation() {
+  const allocation = state.allocation;
+  if (!allocation) {
+    byId("allocationGrid").innerHTML = "";
+    return;
+  }
+  const groups = [
+    { title: "整體", market_value: allocation.overall.market_value, positions: allocation.overall.positions || [] },
+    ...(allocation.portfolios || []).map((portfolio) => ({
+      title: portfolio.portfolio,
+      market_value: portfolio.market_value,
+      positions: portfolio.positions || [],
+    })),
+  ];
+  byId("allocationGrid").innerHTML = groups.map(renderAllocationGroup).join("");
+}
+
+function renderAllocationGroup(group) {
+  const positions = [...group.positions].sort((a, b) => Number(b.allocation_pct || 0) - Number(a.allocation_pct || 0));
+  const rows = positions.length
+    ? positions
+        .map(
+          (position) => `
+      <div class="allocation-row">
+        <span class="allocation-symbol">${escapeHtml(position.symbol)}</span>
+        <span class="allocation-track"><span class="allocation-fill" style="width:${Math.max(0, Number(position.allocation_pct || 0) * 100)}%"></span></span>
+        <span class="allocation-percent">${pct(position.allocation_pct)}</span>
+      </div>`,
+        )
+        .join("")
+    : `<p class="empty">尚無持股</p>`;
+  return `<section class="allocation-group"><h3>${escapeHtml(group.title)} <span>${money(group.market_value)}</span></h3>${rows}</section>`;
 }
 
 function renderPerformance() {
@@ -376,6 +449,16 @@ async function api(path, options) {
 
 function formToPayload(form) {
   return Object.fromEntries(new FormData(form).entries());
+}
+
+function portfolioQuery() {
+  const portfolio = byId("portfolioFilter").value;
+  return portfolio && portfolio !== "All" ? `&portfolio=${encodeURIComponent(portfolio)}` : "";
+}
+
+function selectedPortfolioForForm() {
+  const portfolio = byId("portfolioFilter").value;
+  return portfolio && portfolio !== "All" ? portfolio : "General";
 }
 
 function byId(id) {

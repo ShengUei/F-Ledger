@@ -5,11 +5,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Iterable
 
-from .models import Dividend, Trade
+from .models import DEFAULT_PORTFOLIO, Dividend, Trade
 
 
-TRADE_FIELDS = ["id", "date", "symbol", "side", "quantity", "price", "fees", "notes"]
-DIVIDEND_FIELDS = ["id", "date", "symbol", "gross_amount", "tax", "notes"]
+TRADE_FIELDS = ["id", "date", "symbol", "side", "quantity", "price", "fees", "portfolio", "notes"]
+DIVIDEND_FIELDS = ["id", "date", "symbol", "gross_amount", "tax", "portfolio", "notes"]
 
 
 class CSVStore:
@@ -29,7 +29,15 @@ class CSVStore:
 
     @staticmethod
     def _ensure_csv(path: Path, fields: list[str]) -> None:
-        if path.exists():
+        if path.exists() and path.stat().st_size > 0:
+            with path.open("r", newline="", encoding="utf-8-sig") as handle:
+                reader = csv.DictReader(handle)
+                existing_fields = reader.fieldnames or []
+                rows = [dict(row) for row in reader]
+            if existing_fields == fields:
+                return
+            normalized_rows = [CSVStore._normalize_row(row, fields) for row in rows]
+            CSVStore._write_rows(path, fields, normalized_rows)
             return
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
@@ -39,13 +47,13 @@ class CSVStore:
         with self._lock:
             rows = self._read_rows(self.trades_path)
         trades = [Trade.from_dict(row) for row in rows]
-        return sorted(trades, key=lambda item: (item.date, item.symbol, item.id))
+        return sorted(trades, key=lambda item: (item.date, item.portfolio, item.symbol, item.id))
 
     def list_dividends(self) -> list[Dividend]:
         with self._lock:
             rows = self._read_rows(self.dividends_path)
         dividends = [Dividend.from_dict(row) for row in rows]
-        return sorted(dividends, key=lambda item: (item.date, item.symbol, item.id))
+        return sorted(dividends, key=lambda item: (item.date, item.portfolio, item.symbol, item.id))
 
     def add_trade(self, trade: Trade) -> Trade:
         saved = trade.with_id()
@@ -92,3 +100,13 @@ class CSVStore:
             writer.writeheader()
             writer.writerows(rows)
         temp_path.replace(path)
+
+    @staticmethod
+    def _normalize_row(row: dict[str, str], fields: list[str]) -> dict[str, str]:
+        normalized = {}
+        for field in fields:
+            if field == "portfolio":
+                normalized[field] = row.get(field) or DEFAULT_PORTFOLIO
+            else:
+                normalized[field] = row.get(field, "")
+        return normalized

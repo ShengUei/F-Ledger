@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .analytics import PortfolioAnalytics
+from .analytics import PortfolioAnalytics, portfolio_names
 from .models import Dividend, Trade, parse_date
 from .pricing import YahooFinanceProvider
 from .storage import CSVStore
@@ -51,6 +51,11 @@ def _handle_api_request(
             "dividends": [dividend.to_json() for dividend in store.list_dividends()],
         }
 
+    if method == "GET" and path == "/api/portfolios":
+        trades = store.list_trades()
+        dividends = store.list_dividends()
+        return 200, {"portfolios": portfolio_names(trades, dividends)}
+
     if method == "POST" and path == "/api/trades":
         payload = _read_json(body)
         trade = store.add_trade(Trade.from_dict(payload))
@@ -73,7 +78,8 @@ def _handle_api_request(
 
     if method == "GET" and path == "/api/summary":
         as_of = parse_date(_query_one(query, "as_of", date.today().isoformat()), "as_of")
-        return 200, analytics.summary(store.list_trades(), store.list_dividends(), as_of)
+        portfolio = _query_optional(query, "portfolio")
+        return 200, analytics.summary(store.list_trades(), store.list_dividends(), as_of, portfolio=portfolio)
 
     if method == "GET" and path == "/api/performance":
         trades = store.list_trades()
@@ -82,7 +88,12 @@ def _handle_api_request(
         start = parse_date(_query_one(query, "start", default_start.isoformat()), "start")
         end = parse_date(_query_one(query, "end", default_end.isoformat()), "end")
         interval = _query_one(query, "interval", "monthly")
-        return 200, analytics.performance(trades, dividends, start, end, interval)
+        portfolio = _query_optional(query, "portfolio")
+        return 200, analytics.performance(trades, dividends, start, end, interval, portfolio=portfolio)
+
+    if method == "GET" and path == "/api/allocation":
+        as_of = parse_date(_query_one(query, "as_of", date.today().isoformat()), "as_of")
+        return 200, analytics.allocation(store.list_trades(), store.list_dividends(), as_of)
 
     return 404, {"error": "not found"}
 
@@ -104,6 +115,13 @@ def _query_one(query: dict[str, list[str]], key: str, default: str) -> str:
     if not values:
         return default
     return values[0] or default
+
+
+def _query_optional(query: dict[str, list[str]], key: str) -> str | None:
+    values = query.get(key)
+    if not values:
+        return None
+    return values[0] or None
 
 
 def _default_range(trades: list[Trade], dividends: list[Dividend]) -> tuple[date, date]:

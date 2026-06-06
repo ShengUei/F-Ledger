@@ -7,6 +7,7 @@ from uuid import uuid4
 
 
 DATE_FORMAT = "%Y-%m-%d"
+DEFAULT_PORTFOLIO = "General"
 
 
 def make_id() -> str:
@@ -45,6 +46,11 @@ def normalize_symbol(value: Any) -> str:
     return symbol
 
 
+def normalize_portfolio(value: Any) -> str:
+    portfolio = str(value or "").strip()
+    return portfolio or DEFAULT_PORTFOLIO
+
+
 def money_to_text(value: float) -> str:
     return f"{value:.10g}"
 
@@ -59,6 +65,7 @@ class Trade:
     price: float
     fees: float = 0.0
     notes: str = ""
+    portfolio: str = DEFAULT_PORTFOLIO
 
     def __post_init__(self) -> None:
         self.id = str(self.id or "")
@@ -69,6 +76,7 @@ class Trade:
         self.price = parse_float(self.price, "price")
         self.fees = parse_float(self.fees, "fees")
         self.notes = str(self.notes or "")
+        self.portfolio = normalize_portfolio(self.portfolio)
         self.validate()
 
     def validate(self) -> None:
@@ -92,6 +100,7 @@ class Trade:
             price=parse_float(data.get("price"), "price"),
             fees=parse_float(data.get("fees", 0), "fees"),
             notes=str(data.get("notes", "")),
+            portfolio=normalize_portfolio(data.get("portfolio", DEFAULT_PORTFOLIO)),
         )
 
     def with_id(self) -> "Trade":
@@ -106,6 +115,7 @@ class Trade:
             price=self.price,
             fees=self.fees,
             notes=self.notes,
+            portfolio=self.portfolio,
         )
 
     def to_row(self) -> dict[str, str]:
@@ -117,6 +127,7 @@ class Trade:
             "quantity": money_to_text(self.quantity),
             "price": money_to_text(self.price),
             "fees": money_to_text(self.fees),
+            "portfolio": self.portfolio,
             "notes": self.notes,
         }
 
@@ -129,6 +140,7 @@ class Trade:
             "quantity": self.quantity,
             "price": self.price,
             "fees": self.fees,
+            "portfolio": self.portfolio,
             "notes": self.notes,
         }
 
@@ -141,6 +153,7 @@ class Dividend:
     gross_amount: float
     tax: float = 0.0
     notes: str = ""
+    portfolio: str = DEFAULT_PORTFOLIO
 
     def __post_init__(self) -> None:
         self.id = str(self.id or "")
@@ -149,6 +162,7 @@ class Dividend:
         self.gross_amount = parse_float(self.gross_amount, "gross_amount")
         self.tax = parse_float(self.tax, "tax")
         self.notes = str(self.notes or "")
+        self.portfolio = normalize_portfolio(self.portfolio)
         self.validate()
 
     def validate(self) -> None:
@@ -170,6 +184,7 @@ class Dividend:
             gross_amount=parse_float(data.get("gross_amount"), "gross_amount"),
             tax=parse_float(data.get("tax", 0), "tax"),
             notes=str(data.get("notes", "")),
+            portfolio=normalize_portfolio(data.get("portfolio", DEFAULT_PORTFOLIO)),
         )
 
     def with_id(self) -> "Dividend":
@@ -182,6 +197,7 @@ class Dividend:
             gross_amount=self.gross_amount,
             tax=self.tax,
             notes=self.notes,
+            portfolio=self.portfolio,
         )
 
     def to_row(self) -> dict[str, str]:
@@ -191,6 +207,7 @@ class Dividend:
             "symbol": self.symbol,
             "gross_amount": money_to_text(self.gross_amount),
             "tax": money_to_text(self.tax),
+            "portfolio": self.portfolio,
             "notes": self.notes,
         }
 
@@ -202,5 +219,6 @@ class Dividend:
             "gross_amount": self.gross_amount,
             "tax": self.tax,
             "net_amount": self.net_amount,
+            "portfolio": self.portfolio,
             "notes": self.notes,
         }

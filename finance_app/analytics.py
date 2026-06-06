@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Protocol
 
-from .models import Dividend, Trade
+from .models import Dividend, Trade, normalize_portfolio
 
 
 class PriceProvider(Protocol):
@@ -40,7 +40,10 @@ class PortfolioAnalytics:
         trades: list[Trade],
         dividends: list[Dividend],
         as_of: date,
+        portfolio: str | None = None,
     ) -> dict:
+        portfolio_filter = normalize_portfolio_filter(portfolio)
+        trades, dividends = filter_records(trades, dividends, portfolio_filter)
         relevant_trades = sorted(
             [trade for trade in trades if trade.date <= as_of],
             key=lambda item: (item.date, 0 if item.side == "BUY" else 1, item.symbol, item.id),
@@ -74,8 +77,12 @@ class PortfolioAnalytics:
                     "market_value": round_money(value),
                     "unrealized_gain": round_money(value - state.cost_basis),
                     "dividends": round_money(dividend_totals.get(symbol, 0.0)),
+                    "allocation_pct": 0.0,
                 }
             )
+
+        for position in positions:
+            position["allocation_pct"] = round_number(position["market_value"] / market_value) if market_value else 0.0
 
         buy_cost = sum(state.buy_cost for state in states.values())
         sell_proceeds = sum(state.sell_proceeds for state in states.values())
@@ -87,6 +94,7 @@ class PortfolioAnalytics:
 
         return {
             "as_of": as_of.isoformat(),
+            "portfolio": portfolio_filter or "All",
             "market_value": round_money(market_value),
             "buy_cost": round_money(buy_cost),
             "sell_proceeds": round_money(sell_proceeds),
@@ -106,12 +114,37 @@ class PortfolioAnalytics:
         start: date,
         end: date,
         interval: str = "monthly",
+        portfolio: str | None = None,
     ) -> dict:
         if end < start:
             raise ValueError("end must be on or after start")
-        points = [self._point_from_summary(self.summary(trades, dividends, point)) for point in date_points(start, end, interval)]
-        annual = self._annual_points(trades, dividends, start, end)
-        return {"points": points, "annual": annual}
+        points = [
+            self._point_from_summary(self.summary(trades, dividends, point, portfolio=portfolio))
+            for point in date_points(start, end, interval)
+        ]
+        annual = self._annual_points(trades, dividends, start, end, portfolio)
+        return {"portfolio": normalize_portfolio_filter(portfolio) or "All", "points": points, "annual": annual}
+
+    def allocation(
+        self,
+        trades: list[Trade],
+        dividends: list[Dividend],
+        as_of: date,
+    ) -> dict:
+        overall = self.summary(trades, dividends, as_of)
+        portfolios = []
+        for portfolio_name in portfolio_names(trades, dividends):
+            summary = self.summary(trades, dividends, as_of, portfolio=portfolio_name)
+            portfolios.append(
+                {
+                    "portfolio": portfolio_name,
+                    "market_value": summary["market_value"],
+                    "total_gain": summary["total_gain"],
+                    "dividends": summary["dividends"],
+                    "positions": summary["positions"],
+                }
+            )
+        return {"as_of": as_of.isoformat(), "overall": overall, "portfolios": portfolios}
 
     def _annual_points(
         self,
@@ -119,7 +152,10 @@ class PortfolioAnalytics:
         dividends: list[Dividend],
         start: date,
         end: date,
+        portfolio: str | None = None,
     ) -> list[dict]:
+        portfolio_filter = normalize_portfolio_filter(portfolio)
+        filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
         rows = []
         for year in range(start.year, end.year + 1):
             year_start = max(start, date(year, 1, 1))
@@ -127,13 +163,17 @@ class PortfolioAnalytics:
             if year_end < year_start:
                 continue
             previous_day = year_start - timedelta(days=1)
-            baseline = self.summary(trades, dividends, previous_day) if previous_day >= date(1900, 1, 1) else None
-            ending = self.summary(trades, dividends, year_end)
+            baseline = (
+                self.summary(filtered_trades, filtered_dividends, previous_day)
+                if previous_day >= date(1900, 1, 1)
+                else None
+            )
+            ending = self.summary(filtered_trades, filtered_dividends, year_end)
             baseline_gain = baseline["total_gain"] if baseline else 0.0
             annual_gain = ending["total_gain"] - baseline_gain
             annual_buy_cost = sum(
                 trade.quantity * trade.price + trade.fees
-                for trade in trades
+                for trade in filtered_trades
                 if year_start <= trade.date <= year_end and trade.side == "BUY"
             )
             return_base = annual_buy_cost if annual_buy_cost else max(ending["buy_cost"], 1.0)
@@ -142,7 +182,7 @@ class PortfolioAnalytics:
                     "year": year,
                     "gain": round_money(annual_gain),
                     "dividends": round_money(
-                        sum(dividend.net_amount for dividend in dividends if year_start <= dividend.date <= year_end)
+                        sum(dividend.net_amount for dividend in filtered_dividends if year_start <= dividend.date <= year_end)
                     ),
                     "return_pct": round_number(annual_gain / return_base if return_base else 0.0),
                     "ending_market_value": ending["market_value"],
@@ -261,3 +301,27 @@ def round_money(value: float) -> float:
 
 def round_number(value: float) -> float:
     return round(float(value), 6)
+
+
+def normalize_portfolio_filter(portfolio: str | None) -> str | None:
+    if portfolio is None:
+        return None
+    normalized = normalize_portfolio(portfolio)
+    return None if normalized.lower() == "all" else normalized
+
+
+def filter_records(
+    trades: list[Trade],
+    dividends: list[Dividend],
+    portfolio: str | None,
+) -> tuple[list[Trade], list[Dividend]]:
+    if not portfolio:
+        return trades, dividends
+    return (
+        [trade for trade in trades if trade.portfolio == portfolio],
+        [dividend for dividend in dividends if dividend.portfolio == portfolio],
+    )
+
+
+def portfolio_names(trades: list[Trade], dividends: list[Dividend]) -> list[str]:
+    return sorted({trade.portfolio for trade in trades} | {dividend.portfolio for dividend in dividends})
