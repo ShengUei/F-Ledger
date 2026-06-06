@@ -1,0 +1,100 @@
+# Stock Portfolio Tracker SDD
+
+## Goal
+
+Build a local WebUI tool that lets a user enter stock trades and dividends,
+then inspect portfolio performance for the current date, each year, or any
+selected date range.
+
+## Constraints
+
+- Python backend plus HTML and JavaScript frontend.
+- Yahoo Finance is the market data source.
+- No Redis, database, ELK, or external service.
+- User records and cached market data are managed as CSV files.
+- The application is started locally and used through a browser.
+- The design should keep room for future features.
+- Development follows SDD and TDD: this file defines behavior; tests protect
+  storage, calculation, and API behavior.
+
+## CSV Files
+
+### `trades.csv`
+
+| column | type | notes |
+| --- | --- | --- |
+| id | string | generated UUID |
+| date | YYYY-MM-DD | transaction date |
+| symbol | string | stock ticker, normalized uppercase |
+| side | BUY or SELL | transaction direction |
+| quantity | decimal | positive share quantity |
+| price | decimal | unit price |
+| fees | decimal | transaction fee, default 0 |
+| notes | string | optional |
+
+### `dividends.csv`
+
+| column | type | notes |
+| --- | --- | --- |
+| id | string | generated UUID |
+| date | YYYY-MM-DD | payment date |
+| symbol | string | stock ticker, normalized uppercase |
+| gross_amount | decimal | total dividend amount before tax |
+| tax | decimal | withholding or other tax, default 0 |
+| notes | string | optional |
+
+### Price Cache
+
+Files live in `price_cache/{symbol}.csv`.
+
+| column | type | notes |
+| --- | --- | --- |
+| date | YYYY-MM-DD | market date |
+| close | decimal | adjusted close from Yahoo Finance when available |
+
+## Portfolio Math
+
+Trades are processed chronologically by symbol using average cost.
+
+- BUY:
+  - shares increase by quantity.
+  - cost basis increases by `quantity * price + fees`.
+  - cash flow decreases by the same amount.
+- SELL:
+  - shares decrease by quantity.
+  - realized gain increases by `net proceeds - average_cost * quantity`.
+  - cost basis decreases by `average_cost * quantity`.
+  - cash flow increases by `quantity * price - fees`.
+- DIVIDEND:
+  - dividend total increases by `gross_amount - tax`.
+  - cash flow increases by the same amount.
+
+At a valuation date:
+
+- market value is open shares times the latest known close on or before the date.
+- total gain is `market_value + cumulative_cash_flow`.
+- return percent is `total_gain / total_buy_cost`.
+
+If Yahoo price data is unavailable, the engine uses the latest transaction price
+before the valuation date as a fallback and returns a warning.
+
+## API
+
+| method | path | behavior |
+| --- | --- | --- |
+| GET | `/api/records` | returns all trades and dividends |
+| POST | `/api/trades` | creates a trade |
+| DELETE | `/api/trades/{id}` | deletes a trade |
+| POST | `/api/dividends` | creates a dividend |
+| DELETE | `/api/dividends/{id}` | deletes a dividend |
+| GET | `/api/summary?as_of=YYYY-MM-DD` | returns portfolio summary |
+| GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly` | returns performance series and annual bars |
+
+## Acceptance Scenarios
+
+1. A user can add a BUY trade and see it in the records table.
+2. A user can add a SELL trade and realized gain is computed with average cost.
+3. A user can add a dividend and net dividend appears in summary and charts.
+4. A user can select a date range and interval to inspect performance.
+5. A user can inspect yearly performance bars for multi-year records.
+6. The app can run locally with `python -m finance_app`.

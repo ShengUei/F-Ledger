@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>股票績效與配息追蹤</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>股票績效與配息追蹤</h1>
+        <p id="statusText" aria-live="polite">載入中</p>
+      </div>
+      <button class="icon-button" id="refreshButton" type="button" title="重新整理" aria-label="重新整理">
+        ↻
+      </button>
+    </header>
+
+    <main class="app-shell">
+      <section class="workspace">
+        <div class="toolbar">
+          <label>
+            結算日
+            <input id="asOfInput" type="date" />
+          </label>
+          <label>
+            起日
+            <input id="startInput" type="date" />
+          </label>
+          <label>
+            迄日
+            <input id="endInput" type="date" />
+          </label>
+          <div class="segmented" aria-label="圖表區間">
+            <button type="button" data-interval="daily">日</button>
+            <button type="button" data-interval="monthly" class="active">月</button>
+            <button type="button" data-interval="yearly">年</button>
+          </div>
+        </div>
+
+        <section class="metric-grid" id="metricGrid"></section>
+
+        <section class="chart-grid">
+          <article class="chart-panel">
+            <header>
+              <h2>資產與損益</h2>
+              <div class="legend" id="performanceLegend"></div>
+            </header>
+            <svg id="performanceChart" role="img" aria-label="資產與損益圖表"></svg>
+          </article>
+          <article class="chart-panel">
+            <header>
+              <h2>年度績效</h2>
+              <div class="legend" id="annualLegend"></div>
+            </header>
+            <svg id="annualChart" role="img" aria-label="年度績效圖表"></svg>
+          </article>
+        </section>
+
+        <section class="table-panel">
+          <header>
+            <h2>持股</h2>
+          </header>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>股票</th>
+                  <th>股數</th>
+                  <th>均價</th>
+                  <th>現價</th>
+                  <th>市值</th>
+                  <th>未實現</th>
+                  <th>配息</th>
+                </tr>
+              </thead>
+              <tbody id="positionsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <aside class="side-rail">
+        <section class="form-panel">
+          <div class="tabs" role="tablist" aria-label="新增資料">
+            <button class="active" type="button" data-form-tab="trade">交易</button>
+            <button type="button" data-form-tab="dividend">配息</button>
+          </div>
+
+          <form id="tradeForm" class="record-form">
+            <label>
+              日期
+              <input name="date" type="date" required />
+            </label>
+            <label>
+              股票代號
+              <input name="symbol" type="text" placeholder="2330.TW" required />
+            </label>
+            <label>
+              方向
+              <select name="side">
+                <option value="BUY">買進</option>
+                <option value="SELL">賣出</option>
+              </select>
+            </label>
+            <label>
+              股數
+              <input name="quantity" type="number" min="0" step="0.0001" required />
+            </label>
+            <label>
+              成交價
+              <input name="price" type="number" min="0" step="0.0001" required />
+            </label>
+            <label>
+              手續費
+              <input name="fees" type="number" min="0" step="0.0001" value="0" />
+            </label>
+            <label class="full">
+              備註
+              <input name="notes" type="text" />
+            </label>
+            <button class="primary" type="submit">新增交易</button>
+          </form>
+
+          <form id="dividendForm" class="record-form hidden">
+            <label>
+              日期
+              <input name="date" type="date" required />
+            </label>
+            <label>
+              股票代號
+              <input name="symbol" type="text" placeholder="AAPL" required />
+            </label>
+            <label>
+              配息總額
+              <input name="gross_amount" type="number" min="0" step="0.0001" required />
+            </label>
+            <label>
+              稅額
+              <input name="tax" type="number" min="0" step="0.0001" value="0" />
+            </label>
+            <label class="full">
+              備註
+              <input name="notes" type="text" />
+            </label>
+            <button class="primary" type="submit">新增配息</button>
+          </form>
+        </section>
+
+        <section class="table-panel compact">
+          <header>
+            <h2>紀錄</h2>
+          </header>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>股票</th>
+                  <th>類型</th>
+                  <th>金額</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="recordsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
