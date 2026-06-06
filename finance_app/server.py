@@ -16,6 +16,13 @@ from .pricing import YahooFinanceProvider
 from .storage import CSVStore, StorageBackend
 
 
+TRADE_IMPORT_TEMPLATE = (
+    "date,symbol,side,quantity,price,fees,currency,portfolio,notes\n"
+    "2024-01-02,GOOG,BUY,10,100,1,USD,美股,example buy\n"
+    "2024-01-03,2330.TW,BUY,5,500,20,TWD,臺股,example buy\n"
+)
+
+
 @dataclass
 class AppContext:
     store: StorageBackend
@@ -58,11 +65,35 @@ def _handle_api_request(
         dividends = store.list_dividends()
         return 200, {"portfolios": portfolio_names(trades, dividends)}
 
+    if method == "GET" and path == "/api/templates/trades":
+        return 200, {
+            "filename": "trade-import-template.csv",
+            "content_type": "text/csv; charset=utf-8",
+            "content": TRADE_IMPORT_TEMPLATE,
+        }
+
     if method == "POST" and path == "/api/trades":
         payload = _read_json(body)
         trade = store.add_trade(Trade.from_dict(payload))
         _clear_result_cache(context)
         return 201, {"trade": trade.to_json()}
+
+    if method == "POST" and path == "/api/import/trades":
+        payload = _read_json(body)
+        raw_records = payload.get("records")
+        if not isinstance(raw_records, list) or not raw_records:
+            raise ValueError("records must be a non-empty list")
+        trades = []
+        for index, record in enumerate(raw_records, start=1):
+            if not isinstance(record, dict):
+                raise ValueError(f"row {index}: record must be an object")
+            try:
+                trades.append(Trade.from_dict(record))
+            except ValueError as exc:
+                raise ValueError(f"row {index}: {exc}") from exc
+        saved = [store.add_trade(trade) for trade in trades]
+        _clear_result_cache(context)
+        return 201, {"imported_count": len(saved), "trades": [trade.to_json() for trade in saved]}
 
     if method == "POST" and path == "/api/dividends":
         payload = _read_json(body)

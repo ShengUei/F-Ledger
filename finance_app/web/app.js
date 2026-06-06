@@ -80,6 +80,8 @@ function bindEvents() {
   window.addEventListener("resize", scheduleChartRender);
   byId("tradeForm").addEventListener("submit", submitTrade);
   byId("dividendForm").addEventListener("submit", submitDividend);
+  byId("downloadTradeTemplateButton").addEventListener("click", downloadTradeTemplate);
+  byId("importTradesButton").addEventListener("click", importTradesFromFile);
 }
 
 async function refreshAll() {
@@ -165,6 +167,38 @@ async function deleteRecord(kind, id) {
   const path = kind === "trade" ? `/api/trades/${encodeURIComponent(id)}` : `/api/dividends/${encodeURIComponent(id)}`;
   await apiDelete(path);
   await refreshAll();
+}
+
+async function downloadTradeTemplate() {
+  try {
+    const template = await apiGet("/api/templates/trades");
+    downloadTextFile(template.filename || "trade-import-template.csv", template.content || "");
+    setImportStatus("已下載交易匯入範本");
+  } catch (error) {
+    setImportStatus(error.message || "下載範本失敗");
+  }
+}
+
+async function importTradesFromFile() {
+  const fileInput = byId("tradeImportFile");
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    setImportStatus("請先選擇 CSV 檔案");
+    return;
+  }
+
+  try {
+    setImportStatus("讀取檔案中");
+    const text = await file.text();
+    const records = parseTradeImportCSV(text);
+    setImportStatus(`準備匯入 ${records.length} 筆交易`);
+    const payload = await apiPost("/api/import/trades", { records });
+    fileInput.value = "";
+    setImportStatus(`已匯入 ${payload.imported_count} 筆交易`);
+    await refreshAll();
+  } catch (error) {
+    setImportStatus(error.message || "匯入失敗");
+  }
 }
 
 function renderSummary() {
@@ -641,6 +675,107 @@ async function api(path, options) {
     throw new Error(payload.error || `HTTP ${response.status}`);
   }
   return payload;
+}
+
+function parseTradeImportCSV(text) {
+  const rows = parseCSV(text);
+  if (rows.length < 2) {
+    throw new Error("CSV 至少需要標題列與一筆資料");
+  }
+  const headers = rows[0].map((header) => header.trim());
+  const required = ["date", "symbol", "side", "quantity", "price"];
+  const missing = required.filter((field) => !headers.includes(field));
+  if (missing.length) {
+    throw new Error(`CSV 缺少必要欄位: ${missing.join(", ")}`);
+  }
+
+  return rows
+    .slice(1)
+    .filter((row) => row.some((cell) => String(cell || "").trim() !== ""))
+    .map((row, index) => {
+      const record = {};
+      headers.forEach((header, columnIndex) => {
+        if (header) {
+          record[header] = row[columnIndex] || "";
+        }
+      });
+      if (!record.fees) {
+        record.fees = "0";
+      }
+      if (!record.portfolio) {
+        record.portfolio = selectedPortfolioForForm();
+      }
+      if (!record.currency) {
+        record.currency = inferCurrency(record.symbol);
+      }
+      if (!record.notes) {
+        record.notes = "";
+      }
+      for (const field of required) {
+        if (!String(record[field] || "").trim()) {
+          throw new Error(`第 ${index + 2} 列缺少 ${field}`);
+        }
+      }
+      return record;
+    });
+}
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === '"' && inQuotes && next === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      row.push(cell);
+      cell = "";
+      continue;
+    }
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") {
+        index += 1;
+      }
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+  if (cell || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function downloadTextFile(filename, content) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function setImportStatus(message) {
+  byId("importStatus").textContent = message;
 }
 
 function formPayloadWithPortfolio(form) {

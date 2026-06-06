@@ -70,6 +70,7 @@ select {
 .segmented button,
 .tabs button,
 .primary,
+.secondary,
 .danger {
   min-height: 38px;
   border: 1px solid var(--line);
@@ -453,11 +454,44 @@ tr:last-child td {
   grid-column: 1 / -1;
 }
 
+.import-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.import-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.import-panel h2 {
+  font-size: 15px;
+}
+
+.import-panel p {
+  margin: 0;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .primary {
   border-color: var(--ink);
   background: var(--ink);
   color: #fff;
   font-weight: 600;
+}
+
+.secondary {
+  min-height: 34px;
+  padding: 6px 10px;
+  color: var(--ink);
+  background: #f8fafc;
 }
 
 .danger {

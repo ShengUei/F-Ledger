@@ -16,6 +16,7 @@ loaded from Yahoo Finance through its public chart endpoint.
 - View holding allocation for the full account and for each portfolio.
 - Record source currency for US and Taiwan stock trades and dividends.
 - Switch report display currency between TWD and USD.
+- Download a trade import template and upload CSV files to add many trades at once.
 - No database, Redis, ELK, or external service is required.
 
 ## Quick Start
@@ -54,6 +55,21 @@ valuation-date rates for current market value.
 older CSV headers automatically at startup. `CSVStore` implements the
 `StorageBackend` protocol, so a future storage format can replace CSV without
 rewriting analytics or the WebUI.
+
+## Trade Import
+
+Use the WebUI batch import panel to download `trade-import-template.csv`.
+The uploaded CSV should use these columns:
+
+```csv
+date,symbol,side,quantity,price,fees,currency,portfolio,notes
+2024-01-02,GOOG,BUY,10,100,1,USD,美股,example buy
+2024-01-03,2330.TW,BUY,5,500,20,TWD,臺股,example buy
+```
+
+Required columns are `date`, `symbol`, `side`, `quantity`, and `price`.
+Missing `fees` defaults to `0`; missing `currency` and `portfolio` are inferred
+by the app.
 
 ## Tests
 

@@ -130,6 +130,8 @@ When a report display currency is selected:
 | --- | --- | --- |
 | GET | `/api/records` | returns all trades and dividends |
 | POST | `/api/trades` | creates a trade |
+| GET | `/api/templates/trades` | returns a CSV template for trade batch import |
+| POST | `/api/import/trades` | imports multiple trade records from parsed CSV rows |
 | DELETE | `/api/trades/{id}` | deletes a trade |
 | POST | `/api/dividends` | creates a dividend |
 | DELETE | `/api/dividends/{id}` | deletes a dividend |
@@ -155,3 +157,5 @@ When a report display currency is selected:
 13. A user can choose chart X-axis label format and Y-axis value mode.
 14. A user can hover a chart to inspect the nearest point or annual bar values.
 15. A user can select an existing portfolio from a dropdown or create a new portfolio while adding a record.
+16. A user can download a trade CSV import template.
+17. A user can upload a trade CSV file and import multiple trade records at once.

@@ -234,6 +234,19 @@
             </label>
             <button class="primary" type="submit">新增配息</button>
           </form>
+
+          <section class="import-panel">
+            <header>
+              <h2>批次匯入交易</h2>
+              <button class="secondary" id="downloadTradeTemplateButton" type="button">下載範本</button>
+            </header>
+            <label>
+              CSV 檔案
+              <input id="tradeImportFile" type="file" accept=".csv,text/csv" />
+            </label>
+            <button class="primary" id="importTradesButton" type="button">匯入交易</button>
+            <p id="importStatus" aria-live="polite"></p>
+          </section>
         </section>
 
         <section class="table-panel compact">

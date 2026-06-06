@@ -96,6 +96,97 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(payload["overall"]["positions"][0]["symbol"], "GOOG")
             self.assertEqual([item["portfolio"] for item in payload["portfolios"]], ["Active", "DCA"])
 
+    def test_trade_import_template_and_batch_import(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/templates/trades",
+                {},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["filename"], "trade-import-template.csv")
+            self.assertIn("date,symbol,side,quantity,price,fees,currency,portfolio,notes", payload["content"])
+
+            status, payload = handle_api_request(
+                context,
+                "POST",
+                "/api/import/trades",
+                {},
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "date": "2024-01-02",
+                                "symbol": "GOOG",
+                                "side": "BUY",
+                                "quantity": "10",
+                                "price": "100",
+                                "fees": "1",
+                                "currency": "USD",
+                                "portfolio": "美股",
+                                "notes": "batch one",
+                            },
+                            {
+                                "date": "2024-01-03",
+                                "symbol": "2330.TW",
+                                "side": "BUY",
+                                "quantity": "5",
+                                "price": "500",
+                                "fees": "20",
+                                "currency": "TWD",
+                                "portfolio": "臺股",
+                                "notes": "batch two",
+                            },
+                        ]
+                    }
+                ).encode("utf-8"),
+            )
+
+            self.assertEqual(status, 201)
+            self.assertEqual(payload["imported_count"], 2)
+            self.assertEqual([trade["symbol"] for trade in payload["trades"]], ["GOOG", "2330.TW"])
+            self.assertEqual(len(context.store.list_trades()), 2)
+
+    def test_trade_import_rejects_invalid_batch_without_partial_write(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+
+            status, payload = handle_api_request(
+                context,
+                "POST",
+                "/api/import/trades",
+                {},
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "date": "2024-01-02",
+                                "symbol": "GOOG",
+                                "side": "BUY",
+                                "quantity": "10",
+                                "price": "100",
+                            },
+                            {
+                                "date": "2024-01-03",
+                                "symbol": "MSFT",
+                                "side": "BUY",
+                                "quantity": "0",
+                                "price": "100",
+                            },
+                        ]
+                    }
+                ).encode("utf-8"),
+            )
+
+            self.assertEqual(status, 400)
+            self.assertIn("row 2", payload["error"])
+            self.assertEqual(context.store.list_trades(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
