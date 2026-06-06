@@ -6,11 +6,17 @@ from finance_app.models import Dividend, Trade
 
 
 class FakePriceProvider:
-    def __init__(self, prices):
+    def __init__(self, prices, fx_rates=None):
         self.prices = prices
+        self.fx_rates = fx_rates or {}
 
     def get_prices(self, symbol, start, end):
         return self.prices.get(symbol, {})
+
+    def get_fx_rate(self, from_currency, to_currency, as_of):
+        if from_currency == to_currency:
+            return 1.0
+        return self.fx_rates.get((from_currency, to_currency, as_of), 1.0)
 
 
 class PortfolioAnalyticsTests(unittest.TestCase):
@@ -105,6 +111,34 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertEqual([item["portfolio"] for item in result["portfolios"]], ["Active", "DCA"])
         self.assertAlmostEqual(result["overall"]["positions"][0]["allocation_pct"], 1800 / 2300, places=6)
         self.assertAlmostEqual(result["portfolios"][0]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
+
+    def test_summary_converts_us_and_taiwan_holdings_to_display_currency(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", "Active", currency="USD"),
+            Trade("", date(2024, 1, 2), "2330.TW", "BUY", 10, 500, 0, "", "Active", currency="TWD"),
+        ]
+        dividends = [
+            Dividend("", date(2024, 2, 1), "GOOG", 10, 0, "", "Active", currency="USD"),
+        ]
+        prices = {
+            "GOOG": {date(2024, 12, 31): 120},
+            "2330.TW": {date(2024, 12, 31): 600},
+        }
+        fx_rates = {
+            ("USD", "TWD", date(2024, 1, 2)): 30,
+            ("USD", "TWD", date(2024, 2, 1)): 30.5,
+            ("USD", "TWD", date(2024, 12, 31)): 31,
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices, fx_rates))
+        summary = analytics.summary(trades, dividends, date(2024, 12, 31), display_currency="TWD")
+
+        self.assertEqual(summary["currency"], "TWD")
+        self.assertAlmostEqual(summary["buy_cost"], 35000.0, places=2)
+        self.assertAlmostEqual(summary["market_value"], 43200.0, places=2)
+        self.assertAlmostEqual(summary["dividends"], 305.0, places=2)
+        self.assertAlmostEqual(summary["total_gain"], 8505.0, places=2)
+        self.assertEqual({position["currency"] for position in summary["positions"]}, {"USD", "TWD"})
 
 
 if __name__ == "__main__":

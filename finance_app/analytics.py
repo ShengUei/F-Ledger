@@ -5,19 +5,24 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Protocol
 
-from .models import Dividend, Trade, normalize_portfolio
+from .models import DEFAULT_DISPLAY_CURRENCY, Dividend, Trade, normalize_currency, normalize_portfolio
 
 
 class PriceProvider(Protocol):
     def get_prices(self, symbol: str, start: date, end: date) -> dict[date, float]:
         ...
 
+    def get_fx_rate(self, from_currency: str, to_currency: str, as_of: date) -> float:
+        ...
+
 
 @dataclass
 class PositionState:
     symbol: str
+    currency: str
     quantity: float = 0.0
     cost_basis: float = 0.0
+    display_cost_basis: float = 0.0
     realized_gain: float = 0.0
     buy_cost: float = 0.0
     sell_proceeds: float = 0.0
@@ -30,6 +35,12 @@ class PositionState:
             return 0.0
         return self.cost_basis / self.quantity
 
+    @property
+    def display_average_cost(self) -> float:
+        if self.quantity <= 0:
+            return 0.0
+        return self.display_cost_basis / self.quantity
+
 
 class PortfolioAnalytics:
     def __init__(self, price_provider: PriceProvider) -> None:
@@ -41,7 +52,9 @@ class PortfolioAnalytics:
         dividends: list[Dividend],
         as_of: date,
         portfolio: str | None = None,
+        display_currency: str = DEFAULT_DISPLAY_CURRENCY,
     ) -> dict:
+        report_currency = normalize_report_currency(display_currency)
         portfolio_filter = normalize_portfolio_filter(portfolio)
         trades, dividends = filter_records(trades, dividends, portfolio_filter)
         relevant_trades = sorted(
@@ -49,34 +62,39 @@ class PortfolioAnalytics:
             key=lambda item: (item.date, 0 if item.side == "BUY" else 1, item.symbol, item.id),
         )
         relevant_dividends = [dividend for dividend in dividends if dividend.date <= as_of]
-        states = self._build_positions(relevant_trades)
-        dividend_totals = self._dividend_totals(relevant_dividends)
-        start = self._first_activity_date(relevant_trades, relevant_dividends, as_of)
         warnings: list[str] = []
+        states = self._build_positions(relevant_trades, report_currency, warnings)
+        dividend_totals = self._dividend_totals(relevant_dividends, report_currency, warnings)
+        start = self._first_activity_date(relevant_trades, relevant_dividends, as_of)
 
         market_value = 0.0
         positions = []
-        for symbol, state in sorted(states.items()):
+        for _key, state in sorted(states.items()):
             if abs(state.quantity) < 1e-9:
                 continue
-            price, source = self._latest_price(symbol, start, as_of)
+            price, source = self._latest_price(state.symbol, start, as_of)
             if price is None:
                 price = state.last_trade_price or state.average_cost
                 source = "latest_trade"
-                warnings.append(f"{symbol}: no Yahoo price available; using latest trade price.")
-            value = state.quantity * price
+                warnings.append(f"{state.symbol}: no Yahoo price available; using latest trade price.")
+            display_price = self._convert(price, state.currency, report_currency, as_of, warnings)
+            value = state.quantity * display_price
             market_value += value
             positions.append(
                 {
-                    "symbol": symbol,
+                    "symbol": state.symbol,
+                    "currency": state.currency,
                     "quantity": round_number(state.quantity),
-                    "average_cost": round_money(state.average_cost),
-                    "cost_basis": round_money(state.cost_basis),
-                    "last_price": round_money(price),
+                    "average_cost": round_money(state.display_average_cost),
+                    "source_average_cost": round_money(state.average_cost),
+                    "cost_basis": round_money(state.display_cost_basis),
+                    "source_cost_basis": round_money(state.cost_basis),
+                    "last_price": round_money(display_price),
+                    "source_last_price": round_money(price),
                     "price_source": source,
                     "market_value": round_money(value),
-                    "unrealized_gain": round_money(value - state.cost_basis),
-                    "dividends": round_money(dividend_totals.get(symbol, 0.0)),
+                    "unrealized_gain": round_money(value - state.display_cost_basis),
+                    "dividends": round_money(dividend_totals.get((state.symbol, state.currency), 0.0)),
                     "allocation_pct": 0.0,
                 }
             )
@@ -95,6 +113,7 @@ class PortfolioAnalytics:
         return {
             "as_of": as_of.isoformat(),
             "portfolio": portfolio_filter or "All",
+            "currency": report_currency,
             "market_value": round_money(market_value),
             "buy_cost": round_money(buy_cost),
             "sell_proceeds": round_money(sell_proceeds),
@@ -115,26 +134,37 @@ class PortfolioAnalytics:
         end: date,
         interval: str = "monthly",
         portfolio: str | None = None,
+        display_currency: str = DEFAULT_DISPLAY_CURRENCY,
     ) -> dict:
         if end < start:
             raise ValueError("end must be on or after start")
+        report_currency = normalize_report_currency(display_currency)
         points = [
-            self._point_from_summary(self.summary(trades, dividends, point, portfolio=portfolio))
+            self._point_from_summary(
+                self.summary(trades, dividends, point, portfolio=portfolio, display_currency=report_currency)
+            )
             for point in date_points(start, end, interval)
         ]
-        annual = self._annual_points(trades, dividends, start, end, portfolio)
-        return {"portfolio": normalize_portfolio_filter(portfolio) or "All", "points": points, "annual": annual}
+        annual = self._annual_points(trades, dividends, start, end, portfolio, report_currency)
+        return {
+            "portfolio": normalize_portfolio_filter(portfolio) or "All",
+            "currency": report_currency,
+            "points": points,
+            "annual": annual,
+        }
 
     def allocation(
         self,
         trades: list[Trade],
         dividends: list[Dividend],
         as_of: date,
+        display_currency: str = DEFAULT_DISPLAY_CURRENCY,
     ) -> dict:
-        overall = self.summary(trades, dividends, as_of)
+        report_currency = normalize_report_currency(display_currency)
+        overall = self.summary(trades, dividends, as_of, display_currency=report_currency)
         portfolios = []
         for portfolio_name in portfolio_names(trades, dividends):
-            summary = self.summary(trades, dividends, as_of, portfolio=portfolio_name)
+            summary = self.summary(trades, dividends, as_of, portfolio=portfolio_name, display_currency=report_currency)
             portfolios.append(
                 {
                     "portfolio": portfolio_name,
@@ -144,7 +174,7 @@ class PortfolioAnalytics:
                     "positions": summary["positions"],
                 }
             )
-        return {"as_of": as_of.isoformat(), "overall": overall, "portfolios": portfolios}
+        return {"as_of": as_of.isoformat(), "currency": report_currency, "overall": overall, "portfolios": portfolios}
 
     def _annual_points(
         self,
@@ -153,7 +183,9 @@ class PortfolioAnalytics:
         start: date,
         end: date,
         portfolio: str | None = None,
+        display_currency: str = DEFAULT_DISPLAY_CURRENCY,
     ) -> list[dict]:
+        report_currency = normalize_report_currency(display_currency)
         portfolio_filter = normalize_portfolio_filter(portfolio)
         filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
         rows = []
@@ -164,15 +196,21 @@ class PortfolioAnalytics:
                 continue
             previous_day = year_start - timedelta(days=1)
             baseline = (
-                self.summary(filtered_trades, filtered_dividends, previous_day)
+                self.summary(filtered_trades, filtered_dividends, previous_day, display_currency=report_currency)
                 if previous_day >= date(1900, 1, 1)
                 else None
             )
-            ending = self.summary(filtered_trades, filtered_dividends, year_end)
+            ending = self.summary(filtered_trades, filtered_dividends, year_end, display_currency=report_currency)
             baseline_gain = baseline["total_gain"] if baseline else 0.0
             annual_gain = ending["total_gain"] - baseline_gain
             annual_buy_cost = sum(
-                trade.quantity * trade.price + trade.fees
+                self._convert(
+                    trade.quantity * trade.price + trade.fees,
+                    trade.currency,
+                    report_currency,
+                    trade.date,
+                    [],
+                )
                 for trade in filtered_trades
                 if year_start <= trade.date <= year_end and trade.side == "BUY"
             )
@@ -182,7 +220,17 @@ class PortfolioAnalytics:
                     "year": year,
                     "gain": round_money(annual_gain),
                     "dividends": round_money(
-                        sum(dividend.net_amount for dividend in filtered_dividends if year_start <= dividend.date <= year_end)
+                        sum(
+                            self._convert(
+                                dividend.net_amount,
+                                dividend.currency,
+                                report_currency,
+                                dividend.date,
+                                [],
+                            )
+                            for dividend in filtered_dividends
+                            if year_start <= dividend.date <= year_end
+                        )
                     ),
                     "return_pct": round_number(annual_gain / return_base if return_base else 0.0),
                     "ending_market_value": ending["market_value"],
@@ -203,42 +251,60 @@ class PortfolioAnalytics:
             "return_pct": summary["return_pct"],
         }
 
-    @staticmethod
-    def _build_positions(trades: list[Trade]) -> dict[str, PositionState]:
-        states: dict[str, PositionState] = {}
+    def _build_positions(
+        self,
+        trades: list[Trade],
+        display_currency: str,
+        warnings: list[str],
+    ) -> dict[tuple[str, str], PositionState]:
+        states: dict[tuple[str, str], PositionState] = {}
         for trade in trades:
-            state = states.setdefault(trade.symbol, PositionState(symbol=trade.symbol))
+            key = (trade.symbol, trade.currency)
+            state = states.setdefault(key, PositionState(symbol=trade.symbol, currency=trade.currency))
             state.last_trade_price = trade.price
             if trade.side == "BUY":
                 cost = trade.quantity * trade.price + trade.fees
+                display_cost = self._convert(cost, trade.currency, display_currency, trade.date, warnings)
                 state.quantity += trade.quantity
                 state.cost_basis += cost
-                state.buy_cost += cost
+                state.display_cost_basis += display_cost
+                state.buy_cost += display_cost
                 continue
 
             proceeds = trade.quantity * trade.price - trade.fees
-            state.sell_proceeds += proceeds
+            display_proceeds = self._convert(proceeds, trade.currency, display_currency, trade.date, warnings)
+            state.sell_proceeds += display_proceeds
             if state.quantity <= 1e-9:
                 state.warnings.append(f"{trade.symbol}: sell on {trade.date.isoformat()} has no open shares.")
                 continue
             avg_cost = state.average_cost
+            display_avg_cost = state.display_average_cost
             sold_quantity = min(trade.quantity, state.quantity)
             removed_cost = avg_cost * sold_quantity
-            state.realized_gain += proceeds - removed_cost
+            display_removed_cost = display_avg_cost * sold_quantity
+            state.realized_gain += display_proceeds - display_removed_cost
             state.quantity -= sold_quantity
             state.cost_basis -= removed_cost
+            state.display_cost_basis -= display_removed_cost
             if trade.quantity > sold_quantity:
                 state.warnings.append(f"{trade.symbol}: sell quantity exceeds open shares on {trade.date.isoformat()}.")
             if state.quantity <= 1e-9:
                 state.quantity = 0.0
                 state.cost_basis = 0.0
+                state.display_cost_basis = 0.0
         return states
 
-    @staticmethod
-    def _dividend_totals(dividends: list[Dividend]) -> dict[str, float]:
-        totals: dict[str, float] = {}
+    def _dividend_totals(
+        self,
+        dividends: list[Dividend],
+        display_currency: str,
+        warnings: list[str],
+    ) -> dict[tuple[str, str], float]:
+        totals: dict[tuple[str, str], float] = {}
         for dividend in dividends:
-            totals[dividend.symbol] = totals.get(dividend.symbol, 0.0) + dividend.net_amount
+            key = (dividend.symbol, dividend.currency)
+            display_amount = self._convert(dividend.net_amount, dividend.currency, display_currency, dividend.date, warnings)
+            totals[key] = totals.get(key, 0.0) + display_amount
         return totals
 
     @staticmethod
@@ -257,6 +323,38 @@ class PortfolioAnalytics:
             return None, "missing"
         latest = max(candidates)
         return price_map[latest], "yahoo"
+
+    def _convert(
+        self,
+        amount: float,
+        from_currency: str,
+        to_currency: str,
+        as_of: date,
+        warnings: list[str],
+    ) -> float:
+        rate = self._fx_rate(from_currency, to_currency, as_of, warnings)
+        return amount * rate
+
+    def _fx_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        as_of: date,
+        warnings: list[str],
+    ) -> float:
+        source = normalize_currency(from_currency)
+        target = normalize_currency(to_currency)
+        if source == target:
+            return 1.0
+        get_fx_rate = getattr(self.price_provider, "get_fx_rate", None)
+        if get_fx_rate is None:
+            warnings.append(f"{source}/{target}: no FX provider available; using 1.0.")
+            return 1.0
+        try:
+            return float(get_fx_rate(source, target, as_of))
+        except Exception:
+            warnings.append(f"{source}/{target}: no FX rate available on {as_of.isoformat()}; using 1.0.")
+            return 1.0
 
 
 def date_points(start: date, end: date, interval: str) -> list[date]:
@@ -301,6 +399,10 @@ def round_money(value: float) -> float:
 
 def round_number(value: float) -> float:
     return round(float(value), 6)
+
+
+def normalize_report_currency(currency: str | None) -> str:
+    return normalize_currency(currency or DEFAULT_DISPLAY_CURRENCY)
 
 
 def normalize_portfolio_filter(portfolio: str | None) -> str | None:

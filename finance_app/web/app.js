@@ -5,6 +5,7 @@ const state = {
   summary: null,
   performance: { points: [], annual: [] },
   allocation: null,
+  resizeTimer: null,
 };
 
 const colors = {
@@ -37,7 +38,9 @@ function setDefaultDates() {
 
 function bindEvents() {
   byId("refreshButton").addEventListener("click", refreshAll);
-  ["asOfInput", "startInput", "endInput", "portfolioFilter"].forEach((id) => byId(id).addEventListener("change", refreshAll));
+  ["asOfInput", "startInput", "endInput", "portfolioFilter", "currencyFilter"].forEach((id) => {
+    byId(id).addEventListener("change", refreshAll);
+  });
 
   document.querySelectorAll("[data-interval]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -56,6 +59,13 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll("form input[name='symbol']").forEach((input) => {
+    input.addEventListener("change", () => {
+      input.form.elements.currency.value = inferCurrency(input.value);
+    });
+  });
+
+  window.addEventListener("resize", scheduleChartRender);
   byId("tradeForm").addEventListener("submit", submitTrade);
   byId("dividendForm").addEventListener("submit", submitDividend);
 }
@@ -65,7 +75,8 @@ async function refreshAll() {
   try {
     await refreshPortfolios();
     await Promise.all([refreshRecords(), refreshSummary(), refreshPerformance(), refreshAllocation()]);
-    setStatus("已更新");
+    const warnings = state.summary?.warnings || [];
+    setStatus(warnings.length ? warnings.join(" ") : "已更新");
   } catch (error) {
     setStatus(error.message || "更新失敗");
   }
@@ -84,7 +95,7 @@ async function refreshRecords() {
 
 async function refreshSummary() {
   const asOf = byId("asOfInput").value;
-  state.summary = await apiGet(`/api/summary?as_of=${encodeURIComponent(asOf)}${portfolioQuery()}`);
+  state.summary = await apiGet(`/api/summary?as_of=${encodeURIComponent(asOf)}${portfolioQuery()}${currencyQuery()}`);
   renderSummary();
 }
 
@@ -92,14 +103,14 @@ async function refreshPerformance() {
   const start = byId("startInput").value;
   const end = byId("endInput").value;
   state.performance = await apiGet(
-    `/api/performance?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&interval=${state.interval}${portfolioQuery()}`,
+    `/api/performance?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&interval=${state.interval}${portfolioQuery()}${currencyQuery()}`,
   );
   renderPerformance();
 }
 
 async function refreshAllocation() {
   const asOf = byId("asOfInput").value;
-  state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}`);
+  state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}${currencyQuery()}`);
   renderAllocation();
 }
 
@@ -114,6 +125,7 @@ async function submitTrade(event) {
   form.reset();
   form.elements.date.value = byId("asOfInput").value;
   form.elements.portfolio.value = selectedPortfolioForForm();
+  form.elements.currency.value = byId("currencyFilter").value;
   form.elements.fees.value = "0";
   await refreshAll();
 }
@@ -128,6 +140,7 @@ async function submitDividend(event) {
   form.reset();
   form.elements.date.value = byId("asOfInput").value;
   form.elements.portfolio.value = selectedPortfolioForForm();
+  form.elements.currency.value = byId("currencyFilter").value;
   form.elements.tax.value = "0";
   await refreshAll();
 }
@@ -140,11 +153,12 @@ async function deleteRecord(kind, id) {
 
 function renderSummary() {
   const summary = state.summary || {};
+  const currency = summary.currency || reportCurrency();
   byId("metricGrid").innerHTML = [
-    metric("市值", money(summary.market_value), "Yahoo 收盤價"),
-    metric("總損益", signedMoney(summary.total_gain), pct(summary.return_pct)),
-    metric("已實現", signedMoney(summary.realized_gain), "賣出損益"),
-    metric("累計配息", money(summary.dividends), "稅後"),
+    metric("市值", money(summary.market_value, currency), "Yahoo 收盤價", summary.market_value),
+    metric("總損益", signedMoney(summary.total_gain, currency), pct(summary.return_pct), summary.total_gain),
+    metric("已實現", signedMoney(summary.realized_gain, currency), "賣出損益", summary.realized_gain),
+    metric("累計配息", money(summary.dividends, currency), "稅後", summary.dividends),
   ].join("");
 
   const rows = summary.positions || [];
@@ -154,21 +168,18 @@ function renderSummary() {
           (row) => `
         <tr>
           <td>${escapeHtml(row.symbol)}</td>
+          <td>${escapeHtml(row.currency)}</td>
           <td>${number(row.quantity)}</td>
-          <td>${money(row.average_cost)}</td>
-          <td>${money(row.last_price)}</td>
-          <td>${money(row.market_value)}</td>
+          <td>${money(row.average_cost, currency)}</td>
+          <td>${money(row.last_price, currency)}</td>
+          <td>${money(row.market_value, currency)}</td>
           <td>${pct(row.allocation_pct)}</td>
-          <td class="${classFor(row.unrealized_gain)}">${signedMoney(row.unrealized_gain)}</td>
-          <td>${money(row.dividends)}</td>
+          <td class="${classFor(row.unrealized_gain)}">${signedMoney(row.unrealized_gain, currency)}</td>
+          <td>${money(row.dividends, currency)}</td>
         </tr>`,
         )
         .join("")
-    : `<tr><td class="empty" colspan="8">尚無持股</td></tr>`;
-
-  if (summary.warnings && summary.warnings.length) {
-    setStatus(summary.warnings.join(" "));
-  }
+    : `<tr><td class="empty" colspan="9">尚無持股</td></tr>`;
 }
 
 function renderRecords() {
@@ -176,6 +187,7 @@ function renderRecords() {
     date: trade.date,
     symbol: trade.symbol,
     portfolio: trade.portfolio,
+    currency: trade.currency,
     type: trade.side === "BUY" ? "買進" : "賣出",
     amount: trade.quantity * trade.price + Number(trade.fees || 0),
     id: trade.id,
@@ -185,6 +197,7 @@ function renderRecords() {
     date: dividend.date,
     symbol: dividend.symbol,
     portfolio: dividend.portfolio,
+    currency: dividend.currency,
     type: "配息",
     amount: dividend.net_amount,
     id: dividend.id,
@@ -200,13 +213,14 @@ function renderRecords() {
           <td>${escapeHtml(row.date)}</td>
           <td>${escapeHtml(row.symbol)}</td>
           <td>${escapeHtml(row.portfolio)}</td>
+          <td>${escapeHtml(row.currency)}</td>
           <td>${escapeHtml(row.type)}</td>
-          <td>${money(row.amount)}</td>
+          <td>${money(row.amount, row.currency)}</td>
           <td><button class="danger" type="button" data-delete-kind="${row.kind}" data-delete-id="${row.id}">刪除</button></td>
         </tr>`,
         )
         .join("")
-    : `<tr><td class="empty" colspan="6">尚無紀錄</td></tr>`;
+    : `<tr><td class="empty" colspan="7">尚無紀錄</td></tr>`;
 
   document.querySelectorAll("[data-delete-id]").forEach((button) => {
     button.addEventListener("click", () => deleteRecord(button.dataset.deleteKind, button.dataset.deleteId));
@@ -237,6 +251,7 @@ function renderAllocation() {
     byId("allocationGrid").innerHTML = "";
     return;
   }
+  const currency = allocation.currency || reportCurrency();
   const groups = [
     { title: "整體", market_value: allocation.overall.market_value, positions: allocation.overall.positions || [] },
     ...(allocation.portfolios || []).map((portfolio) => ({
@@ -245,24 +260,24 @@ function renderAllocation() {
       positions: portfolio.positions || [],
     })),
   ];
-  byId("allocationGrid").innerHTML = groups.map(renderAllocationGroup).join("");
+  byId("allocationGrid").innerHTML = groups.map((group) => renderAllocationGroup(group, currency)).join("");
 }
 
-function renderAllocationGroup(group) {
+function renderAllocationGroup(group, currency) {
   const positions = [...group.positions].sort((a, b) => Number(b.allocation_pct || 0) - Number(a.allocation_pct || 0));
   const rows = positions.length
     ? positions
         .map(
           (position) => `
       <div class="allocation-row">
-        <span class="allocation-symbol">${escapeHtml(position.symbol)}</span>
-        <span class="allocation-track"><span class="allocation-fill" style="width:${Math.max(0, Number(position.allocation_pct || 0) * 100)}%"></span></span>
+        <span class="allocation-symbol">${escapeHtml(position.symbol)} <small>${escapeHtml(position.currency)}</small></span>
+        <span class="allocation-track"><span class="allocation-fill" style="width:${Math.min(100, Math.max(0, Number(position.allocation_pct || 0) * 100))}%"></span></span>
         <span class="allocation-percent">${pct(position.allocation_pct)}</span>
       </div>`,
         )
         .join("")
     : `<p class="empty">尚無持股</p>`;
-  return `<section class="allocation-group"><h3>${escapeHtml(group.title)} <span>${money(group.market_value)}</span></h3>${rows}</section>`;
+  return `<section class="allocation-group"><h3>${escapeHtml(group.title)} <span>${money(group.market_value, currency)}</span></h3>${rows}</section>`;
 }
 
 function renderPerformance() {
@@ -286,9 +301,8 @@ function renderPerformance() {
 
 function drawLineChart(svg, points, series) {
   clearSvg(svg);
-  const width = 720;
-  const height = 300;
-  const pad = { top: 22, right: 24, bottom: 42, left: 68 };
+  const { width, height } = chartSize(svg, 720);
+  const pad = chartPadding(width);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   if (!points.length) {
     drawEmpty(svg, width, height, "尚無圖表資料");
@@ -322,9 +336,8 @@ function drawLineChart(svg, points, series) {
 
 function drawBarChart(svg, rows) {
   clearSvg(svg);
-  const width = 560;
-  const height = 300;
-  const pad = { top: 22, right: 24, bottom: 42, left: 68 };
+  const { width, height } = chartSize(svg, 560);
+  const pad = chartPadding(width);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   if (!rows.length) {
     drawEmpty(svg, width, height, "尚無年度資料");
@@ -335,7 +348,7 @@ function drawBarChart(svg, rows) {
   const [minY, maxY] = extent(values.concat([0]));
   drawGrid(svg, width, height, pad, minY, maxY);
   const groupWidth = (width - pad.left - pad.right) / rows.length;
-  const barWidth = Math.min(34, groupWidth / 3);
+  const barWidth = Math.max(8, Math.min(34, groupWidth / 3));
   const zeroY = scale(0, minY, maxY, height - pad.bottom, pad.top);
 
   rows.forEach((row, index) => {
@@ -384,12 +397,13 @@ function drawGrid(svg, width, height, pad, minY, maxY) {
       "text-anchor": "end",
       fill: colors.text,
       "font-size": "12",
-    }).textContent = compactMoney(value);
+    }).textContent = compactMoney(value, reportCurrency());
   }
 }
 
 function drawXAxisLabels(svg, points, width, height, pad) {
-  const indexes = uniqueIndexes([0, Math.floor((points.length - 1) / 2), points.length - 1]);
+  const middle = Math.floor((points.length - 1) / 2);
+  const indexes = width < 520 ? uniqueIndexes([0, points.length - 1]) : uniqueIndexes([0, middle, points.length - 1]);
   indexes.forEach((index) => {
     const x = scale(index, 0, Math.max(points.length - 1, 1), pad.left, width - pad.right);
     addSvg(svg, "text", {
@@ -418,8 +432,8 @@ function renderLegend(id, items) {
     .join("");
 }
 
-function metric(label, value, subtext) {
-  return `<article class="metric"><span>${label}</span><strong class="${value.startsWith("-") ? "negative" : ""}">${value}</strong><small>${subtext}</small></article>`;
+function metric(label, value, subtext, rawValue) {
+  return `<article class="metric"><span>${label}</span><strong class="${Number(rawValue || 0) < 0 ? "negative" : ""}">${value}</strong><small>${subtext}</small></article>`;
 }
 
 async function apiGet(path) {
@@ -456,9 +470,41 @@ function portfolioQuery() {
   return portfolio && portfolio !== "All" ? `&portfolio=${encodeURIComponent(portfolio)}` : "";
 }
 
+function currencyQuery() {
+  return `&currency=${encodeURIComponent(reportCurrency())}`;
+}
+
+function reportCurrency() {
+  return byId("currencyFilter").value || "TWD";
+}
+
 function selectedPortfolioForForm() {
   const portfolio = byId("portfolioFilter").value;
   return portfolio && portfolio !== "All" ? portfolio : "General";
+}
+
+function inferCurrency(symbol) {
+  const normalized = String(symbol || "").trim().toUpperCase();
+  return normalized.endsWith(".TW") || normalized.endsWith(".TWO") ? "TWD" : "USD";
+}
+
+function scheduleChartRender() {
+  clearTimeout(state.resizeTimer);
+  state.resizeTimer = setTimeout(renderPerformance, 120);
+}
+
+function chartSize(svg, fallbackWidth) {
+  const rect = svg.getBoundingClientRect();
+  return {
+    width: Math.max(320, Math.round(rect.width || fallbackWidth)),
+    height: Math.max(240, Math.round(rect.height || 300)),
+  };
+}
+
+function chartPadding(width) {
+  return width < 520
+    ? { top: 22, right: 14, bottom: 42, left: 54 }
+    : { top: 22, right: 24, bottom: 42, left: 74 };
 }
 
 function byId(id) {
@@ -473,17 +519,24 @@ function toInputDate(date) {
   return date.toISOString().slice(0, 10);
 }
 
-function money(value) {
-  return formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function money(value, currency = reportCurrency()) {
+  return new Intl.NumberFormat("zh-TW", {
+    style: "currency",
+    currency,
+    currencyDisplay: "code",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
 }
 
-function signedMoney(value) {
+function signedMoney(value, currency = reportCurrency()) {
   const amount = Number(value || 0);
-  return `${amount < 0 ? "-" : ""}${money(Math.abs(amount))}`;
+  return `${amount < 0 ? "-" : ""}${money(Math.abs(amount), currency)}`;
 }
 
-function compactMoney(value) {
-  return new Intl.NumberFormat("zh-TW", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
+function compactMoney(value, currency = reportCurrency()) {
+  const compact = new Intl.NumberFormat("zh-TW", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
+  return `${currency} ${compact}`;
 }
 
 function number(value) {

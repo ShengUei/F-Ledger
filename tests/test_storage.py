@@ -23,6 +23,7 @@ class CSVStoreTests(unittest.TestCase):
                     fees=1.5,
                     notes="first lot",
                     portfolio="Active",
+                    currency="USD",
                 )
             )
             dividend = store.add_dividend(
@@ -34,6 +35,7 @@ class CSVStoreTests(unittest.TestCase):
                     tax=2,
                     notes="cash dividend",
                     portfolio="Active",
+                    currency="USD",
                 )
             )
 
@@ -43,9 +45,11 @@ class CSVStoreTests(unittest.TestCase):
             self.assertEqual(reloaded.list_trades()[0].id, trade.id)
             self.assertEqual(reloaded.list_trades()[0].symbol, "AAPL")
             self.assertEqual(reloaded.list_trades()[0].portfolio, "Active")
+            self.assertEqual(reloaded.list_trades()[0].currency, "USD")
             self.assertEqual(reloaded.list_dividends()[0].id, dividend.id)
             self.assertEqual(reloaded.list_dividends()[0].gross_amount, 12)
             self.assertEqual(reloaded.list_dividends()[0].portfolio, "Active")
+            self.assertEqual(reloaded.list_dividends()[0].currency, "USD")
 
     def test_delete_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -67,7 +71,7 @@ class CSVStoreTests(unittest.TestCase):
             self.assertFalse(store.delete_trade(trade.id))
             self.assertEqual(store.list_trades(), [])
 
-    def test_existing_csv_without_portfolio_is_migrated(self):
+    def test_existing_csv_without_portfolio_or_currency_is_migrated(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
             data_dir.mkdir(exist_ok=True)
@@ -86,8 +90,14 @@ class CSVStoreTests(unittest.TestCase):
 
             self.assertEqual(store.list_trades()[0].portfolio, "General")
             self.assertEqual(store.list_dividends()[0].portfolio, "General")
-            self.assertIn("portfolio", (data_dir / "trades.csv").read_text(encoding="utf-8").splitlines()[0])
-            self.assertIn("portfolio", (data_dir / "dividends.csv").read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(store.list_trades()[0].currency, "USD")
+            self.assertEqual(store.list_dividends()[0].currency, "USD")
+            trades_header = (data_dir / "trades.csv").read_text(encoding="utf-8").splitlines()[0]
+            dividends_header = (data_dir / "dividends.csv").read_text(encoding="utf-8").splitlines()[0]
+            self.assertIn("portfolio", trades_header)
+            self.assertIn("currency", trades_header)
+            self.assertIn("portfolio", dividends_header)
+            self.assertIn("currency", dividends_header)
 
 
 if __name__ == "__main__":

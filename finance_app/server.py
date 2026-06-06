@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .analytics import PortfolioAnalytics, portfolio_names
-from .models import Dividend, Trade, parse_date
+from .models import DEFAULT_DISPLAY_CURRENCY, Dividend, Trade, parse_date
 from .pricing import YahooFinanceProvider
 from .storage import CSVStore
 
@@ -79,7 +79,14 @@ def _handle_api_request(
     if method == "GET" and path == "/api/summary":
         as_of = parse_date(_query_one(query, "as_of", date.today().isoformat()), "as_of")
         portfolio = _query_optional(query, "portfolio")
-        return 200, analytics.summary(store.list_trades(), store.list_dividends(), as_of, portfolio=portfolio)
+        currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
+        return 200, analytics.summary(
+            store.list_trades(),
+            store.list_dividends(),
+            as_of,
+            portfolio=portfolio,
+            display_currency=currency,
+        )
 
     if method == "GET" and path == "/api/performance":
         trades = store.list_trades()
@@ -89,11 +96,21 @@ def _handle_api_request(
         end = parse_date(_query_one(query, "end", default_end.isoformat()), "end")
         interval = _query_one(query, "interval", "monthly")
         portfolio = _query_optional(query, "portfolio")
-        return 200, analytics.performance(trades, dividends, start, end, interval, portfolio=portfolio)
+        currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
+        return 200, analytics.performance(
+            trades,
+            dividends,
+            start,
+            end,
+            interval,
+            portfolio=portfolio,
+            display_currency=currency,
+        )
 
     if method == "GET" and path == "/api/allocation":
         as_of = parse_date(_query_one(query, "as_of", date.today().isoformat()), "as_of")
-        return 200, analytics.allocation(store.list_trades(), store.list_dividends(), as_of)
+        currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
+        return 200, analytics.allocation(store.list_trades(), store.list_dividends(), as_of, display_currency=currency)
 
     return 404, {"error": "not found"}
 

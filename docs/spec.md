@@ -30,6 +30,7 @@ selected date range.
 | quantity | decimal | positive share quantity |
 | price | decimal | unit price |
 | fees | decimal | transaction fee, default 0 |
+| currency | string | source currency, default inferred from symbol |
 | portfolio | string | investment portfolio name, default `General` |
 | notes | string | optional |
 
@@ -42,6 +43,7 @@ selected date range.
 | symbol | string | stock ticker, normalized uppercase |
 | gross_amount | decimal | total dividend amount before tax |
 | tax | decimal | withholding or other tax, default 0 |
+| currency | string | source currency, default inferred from symbol |
 | portfolio | string | investment portfolio name, default `General` |
 | notes | string | optional |
 
@@ -80,6 +82,15 @@ At a valuation date:
 If Yahoo price data is unavailable, the engine uses the latest transaction price
 before the valuation date as a fallback and returns a warning.
 
+When a report display currency is selected:
+
+- BUY and SELL cash flows use the transaction-date FX rate.
+- DIVIDEND cash flows use the payment-date FX rate.
+- Market value uses the valuation-date FX rate.
+- FX rates are loaded from Yahoo Finance currency pairs such as `USDTWD=X`.
+- Existing CSV rows without `currency` are migrated with inferred defaults:
+  `.TW` and `.TWO` symbols use TWD; other symbols use USD.
+
 ## API
 
 | method | path | behavior |
@@ -90,9 +101,9 @@ before the valuation date as a fallback and returns a warning.
 | POST | `/api/dividends` | creates a dividend |
 | DELETE | `/api/dividends/{id}` | deletes a dividend |
 | GET | `/api/portfolios` | returns available portfolio names |
-| GET | `/api/summary?as_of=YYYY-MM-DD&portfolio=Active` | returns all-portfolio or selected-portfolio summary |
-| GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly&portfolio=Active` | returns filtered performance series and annual bars |
-| GET | `/api/allocation?as_of=YYYY-MM-DD` | returns overall and per-portfolio holding weights |
+| GET | `/api/summary?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns all-portfolio or selected-portfolio summary in a display currency |
+| GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly&portfolio=Active&currency=TWD` | returns filtered performance series and annual bars |
+| GET | `/api/allocation?as_of=YYYY-MM-DD&currency=TWD` | returns overall and per-portfolio holding weights |
 
 ## Acceptance Scenarios
 
@@ -105,3 +116,5 @@ before the valuation date as a fallback and returns a warning.
 7. A user can assign records to portfolios such as `Active` or `DCA`.
 8. A user can view all-stock performance or performance for one portfolio.
 9. A user can view holding allocation for the full account and for each portfolio.
+10. A user can record source currency for US and Taiwan stock transactions.
+11. A user can switch the report display currency between TWD and USD.

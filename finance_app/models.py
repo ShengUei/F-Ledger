@@ -8,6 +8,8 @@ from uuid import uuid4
 
 DATE_FORMAT = "%Y-%m-%d"
 DEFAULT_PORTFOLIO = "General"
+DEFAULT_DISPLAY_CURRENCY = "TWD"
+DEFAULT_US_CURRENCY = "USD"
 
 
 def make_id() -> str:
@@ -51,6 +53,22 @@ def normalize_portfolio(value: Any) -> str:
     return portfolio or DEFAULT_PORTFOLIO
 
 
+def infer_currency(symbol: Any) -> str:
+    normalized_symbol = str(symbol or "").strip().upper()
+    if normalized_symbol.endswith(".TW") or normalized_symbol.endswith(".TWO"):
+        return "TWD"
+    return DEFAULT_US_CURRENCY
+
+
+def normalize_currency(value: Any, symbol: Any = None) -> str:
+    currency = str(value or "").strip().upper()
+    if not currency:
+        currency = infer_currency(symbol)
+    if len(currency) != 3 or not currency.isalpha():
+        raise ValueError("currency must be a 3-letter ISO code")
+    return currency
+
+
 def money_to_text(value: float) -> str:
     return f"{value:.10g}"
 
@@ -66,6 +84,7 @@ class Trade:
     fees: float = 0.0
     notes: str = ""
     portfolio: str = DEFAULT_PORTFOLIO
+    currency: str = ""
 
     def __post_init__(self) -> None:
         self.id = str(self.id or "")
@@ -77,6 +96,7 @@ class Trade:
         self.fees = parse_float(self.fees, "fees")
         self.notes = str(self.notes or "")
         self.portfolio = normalize_portfolio(self.portfolio)
+        self.currency = normalize_currency(self.currency, self.symbol)
         self.validate()
 
     def validate(self) -> None:
@@ -101,6 +121,7 @@ class Trade:
             fees=parse_float(data.get("fees", 0), "fees"),
             notes=str(data.get("notes", "")),
             portfolio=normalize_portfolio(data.get("portfolio", DEFAULT_PORTFOLIO)),
+            currency=normalize_currency(data.get("currency", ""), data.get("symbol", "")),
         )
 
     def with_id(self) -> "Trade":
@@ -116,6 +137,7 @@ class Trade:
             fees=self.fees,
             notes=self.notes,
             portfolio=self.portfolio,
+            currency=self.currency,
         )
 
     def to_row(self) -> dict[str, str]:
@@ -127,6 +149,7 @@ class Trade:
             "quantity": money_to_text(self.quantity),
             "price": money_to_text(self.price),
             "fees": money_to_text(self.fees),
+            "currency": self.currency,
             "portfolio": self.portfolio,
             "notes": self.notes,
         }
@@ -140,6 +163,7 @@ class Trade:
             "quantity": self.quantity,
             "price": self.price,
             "fees": self.fees,
+            "currency": self.currency,
             "portfolio": self.portfolio,
             "notes": self.notes,
         }
@@ -154,6 +178,7 @@ class Dividend:
     tax: float = 0.0
     notes: str = ""
     portfolio: str = DEFAULT_PORTFOLIO
+    currency: str = ""
 
     def __post_init__(self) -> None:
         self.id = str(self.id or "")
@@ -163,6 +188,7 @@ class Dividend:
         self.tax = parse_float(self.tax, "tax")
         self.notes = str(self.notes or "")
         self.portfolio = normalize_portfolio(self.portfolio)
+        self.currency = normalize_currency(self.currency, self.symbol)
         self.validate()
 
     def validate(self) -> None:
@@ -185,6 +211,7 @@ class Dividend:
             tax=parse_float(data.get("tax", 0), "tax"),
             notes=str(data.get("notes", "")),
             portfolio=normalize_portfolio(data.get("portfolio", DEFAULT_PORTFOLIO)),
+            currency=normalize_currency(data.get("currency", ""), data.get("symbol", "")),
         )
 
     def with_id(self) -> "Dividend":
@@ -198,6 +225,7 @@ class Dividend:
             tax=self.tax,
             notes=self.notes,
             portfolio=self.portfolio,
+            currency=self.currency,
         )
 
     def to_row(self) -> dict[str, str]:
@@ -207,6 +235,7 @@ class Dividend:
             "symbol": self.symbol,
             "gross_amount": money_to_text(self.gross_amount),
             "tax": money_to_text(self.tax),
+            "currency": self.currency,
             "portfolio": self.portfolio,
             "notes": self.notes,
         }
@@ -219,6 +248,7 @@ class Dividend:
             "gross_amount": self.gross_amount,
             "tax": self.tax,
             "net_amount": self.net_amount,
+            "currency": self.currency,
             "portfolio": self.portfolio,
             "notes": self.notes,
         }

@@ -14,6 +14,8 @@ loaded from Yahoo Finance through its public chart endpoint.
 - Assign trades and dividends to portfolios such as `Active` or `DCA`.
 - Filter performance by one portfolio or view all portfolios together.
 - View holding allocation for the full account and for each portfolio.
+- Record source currency for US and Taiwan stock trades and dividends.
+- Switch report display currency between TWD and USD.
 - No database, Redis, ELK, or external service is required.
 
 ## Quick Start
@@ -37,8 +39,14 @@ CSV files are created under `data/` by default:
 - `data/dividends.csv`
 - `data/price_cache/*.csv`
 
-Trades and dividends include a `portfolio` column. Existing CSV files without
-that column are migrated automatically and assigned to `General`.
+Trades and dividends include `portfolio` and `currency` columns. Existing CSV
+files without those columns are migrated automatically. Missing portfolios are
+assigned to `General`; missing currencies are inferred from the symbol, where
+`.TW` and `.TWO` use TWD and other symbols use USD.
+
+Market prices and FX rates are loaded from Yahoo Finance. FX conversion uses
+transaction-date rates for trades, payment-date rates for dividends, and
+valuation-date rates for current market value.
 
 ## Tests
 

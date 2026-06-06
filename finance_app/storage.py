@@ -5,11 +5,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Iterable
 
-from .models import DEFAULT_PORTFOLIO, Dividend, Trade
+from .models import DEFAULT_PORTFOLIO, Dividend, Trade, normalize_currency
 
 
-TRADE_FIELDS = ["id", "date", "symbol", "side", "quantity", "price", "fees", "portfolio", "notes"]
-DIVIDEND_FIELDS = ["id", "date", "symbol", "gross_amount", "tax", "portfolio", "notes"]
+TRADE_FIELDS = ["id", "date", "symbol", "side", "quantity", "price", "fees", "currency", "portfolio", "notes"]
+DIVIDEND_FIELDS = ["id", "date", "symbol", "gross_amount", "tax", "currency", "portfolio", "notes"]
 
 
 class CSVStore:
@@ -107,6 +107,8 @@ class CSVStore:
         for field in fields:
             if field == "portfolio":
                 normalized[field] = row.get(field) or DEFAULT_PORTFOLIO
+            elif field == "currency":
+                normalized[field] = normalize_currency(row.get(field, ""), row.get("symbol", ""))
             else:
                 normalized[field] = row.get(field, "")
         return normalized

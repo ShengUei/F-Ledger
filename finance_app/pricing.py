@@ -33,6 +33,27 @@ class YahooFinanceProvider:
                 self._write_cache(symbol, cached)
         return {item_date: close for item_date, close in cached.items() if start <= item_date <= end}
 
+    def get_fx_rate(self, from_currency: str, to_currency: str, as_of: date) -> float:
+        source = from_currency.upper()
+        target = to_currency.upper()
+        if source == target:
+            return 1.0
+        direct = self._latest_pair_rate(f"{source}{target}=X", as_of)
+        if direct is not None:
+            return direct
+        reverse = self._latest_pair_rate(f"{target}{source}=X", as_of)
+        if reverse is not None and reverse != 0:
+            return 1 / reverse
+        raise ValueError(f"No FX rate available for {source}/{target} on {as_of.isoformat()}")
+
+    def _latest_pair_rate(self, pair_symbol: str, as_of: date) -> float | None:
+        start = as_of - timedelta(days=10)
+        prices = self.get_prices(pair_symbol, start, as_of)
+        candidates = [item_date for item_date in prices if item_date <= as_of]
+        if not candidates:
+            return None
+        return prices[max(candidates)]
+
     @staticmethod
     def _needs_fetch(cached: dict[date, float], start: date, end: date) -> bool:
         if not cached:
