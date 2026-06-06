@@ -138,7 +138,7 @@ When a report display currency is selected:
 | GET | `/api/portfolios` | returns available portfolio names |
 | GET | `/api/summary?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns all-portfolio or selected-portfolio summary in a display currency |
 | GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly&portfolio=Active&currency=TWD` | returns filtered performance series and annual bars |
-| GET | `/api/allocation?as_of=YYYY-MM-DD&currency=TWD` | returns overall and per-portfolio holding weights |
+| GET | `/api/allocation?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns selected, overall, and per-portfolio holding weights |
 
 ## Acceptance Scenarios
 
@@ -150,7 +150,7 @@ When a report display currency is selected:
 6. The app can run locally with `python -m finance_app`.
 7. A user can assign records to portfolios such as `Active` or `DCA`.
 8. A user can view all-stock performance or performance for one portfolio.
-9. A user can view holding allocation for the full account and for each portfolio.
+9. A user can view holding allocation for the full account or selected portfolio as an interactive pie chart.
 10. A user can record source currency for US and Taiwan stock transactions.
 11. A user can switch the report display currency between TWD and USD.
 12. Holdings, allocation, performance charts, and annual charts update when the display currency changes.

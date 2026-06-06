@@ -110,9 +110,16 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         analytics = PortfolioAnalytics(FakePriceProvider(prices))
         result = analytics.allocation(trades, [], date(2024, 12, 31))
 
+        self.assertEqual(result["portfolio"], "All")
+        self.assertEqual(result["selected"], result["overall"])
         self.assertEqual([item["portfolio"] for item in result["portfolios"]], ["Active", "DCA"])
         self.assertAlmostEqual(result["overall"]["positions"][0]["allocation_pct"], 1800 / 2300, places=6)
         self.assertAlmostEqual(result["portfolios"][0]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
+
+        active_result = analytics.allocation(trades, [], date(2024, 12, 31), portfolio="Active")
+        self.assertEqual(active_result["portfolio"], "Active")
+        self.assertEqual([position["symbol"] for position in active_result["selected"]["positions"]], ["GOOG", "MSFT"])
+        self.assertAlmostEqual(active_result["selected"]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
 
     def test_summary_converts_us_and_taiwan_holdings_to_display_currency(self):
         trades = [

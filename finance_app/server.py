@@ -148,8 +148,15 @@ def _handle_api_request(
 
     if method == "GET" and path == "/api/allocation":
         as_of = parse_date(_query_one(query, "as_of", date.today().isoformat()), "as_of")
+        portfolio = _query_optional(query, "portfolio")
         currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
-        return 200, analytics.allocation(store.list_trades(), store.list_dividends(), as_of, display_currency=currency)
+        return 200, analytics.allocation(
+            store.list_trades(),
+            store.list_dividends(),
+            as_of,
+            display_currency=currency,
+            portfolio=portfolio,
+        )
 
     return 404, {"error": "not found"}
 

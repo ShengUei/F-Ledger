@@ -94,7 +94,22 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(payload["currency"], "USD")
             self.assertEqual(payload["overall"]["positions"][0]["symbol"], "GOOG")
+            self.assertEqual(payload["portfolio"], "All")
+            self.assertEqual(payload["selected"]["market_value"], payload["overall"]["market_value"])
             self.assertEqual([item["portfolio"] for item in payload["portfolios"]], ["Active", "DCA"])
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/allocation",
+                {"as_of": ["2024-01-03"], "portfolio": ["Active"], "currency": ["USD"]},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["portfolio"], "Active")
+            self.assertEqual(payload["selected"]["positions"][0]["symbol"], "GOOG")
+            self.assertAlmostEqual(payload["selected"]["market_value"], 1000.0, places=2)
 
     def test_trade_import_template_and_batch_import(self):
         with tempfile.TemporaryDirectory() as temp_dir:

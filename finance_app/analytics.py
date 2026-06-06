@@ -172,9 +172,16 @@ class PortfolioAnalytics:
         dividends: list[Dividend],
         as_of: date,
         display_currency: str = DEFAULT_DISPLAY_CURRENCY,
+        portfolio: str | None = None,
     ) -> dict:
         report_currency = normalize_report_currency(display_currency)
+        portfolio_filter = normalize_portfolio_filter(portfolio)
         overall = self.summary(trades, dividends, as_of, display_currency=report_currency)
+        selected = (
+            self.summary(trades, dividends, as_of, portfolio=portfolio_filter, display_currency=report_currency)
+            if portfolio_filter
+            else overall
+        )
         portfolios = []
         for portfolio_name in portfolio_names(trades, dividends):
             summary = self.summary(trades, dividends, as_of, portfolio=portfolio_name, display_currency=report_currency)
@@ -187,7 +194,14 @@ class PortfolioAnalytics:
                     "positions": summary["positions"],
                 }
             )
-        return {"as_of": as_of.isoformat(), "currency": report_currency, "overall": overall, "portfolios": portfolios}
+        return {
+            "as_of": as_of.isoformat(),
+            "portfolio": portfolio_filter or "All",
+            "currency": report_currency,
+            "selected": selected,
+            "overall": overall,
+            "portfolios": portfolios,
+        }
 
     def _annual_points(
         self,

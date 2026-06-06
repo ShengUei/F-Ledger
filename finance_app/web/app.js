@@ -22,6 +22,8 @@ const colors = {
   tooltipStroke: "#cbd5e1",
 };
 
+const allocationPalette = ["#2563eb", "#0f9f6e", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#475569", "#65a30d"];
+
 document.addEventListener("DOMContentLoaded", () => {
   setDefaultDates();
   bindEvents();
@@ -124,7 +126,7 @@ async function refreshPerformance() {
 
 async function refreshAllocation() {
   const asOf = byId("asOfInput").value;
-  state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}${currencyQuery()}`);
+  state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}${portfolioQuery()}${currencyQuery()}`);
   renderAllocation();
 }
 
@@ -299,37 +301,209 @@ function renderPortfolioOptions() {
 
 function renderAllocation() {
   const allocation = state.allocation;
+  const container = byId("allocationGrid");
   if (!allocation) {
-    byId("allocationGrid").innerHTML = "";
+    container.innerHTML = "";
     return;
   }
   const currency = allocation.currency || reportCurrency();
-  const groups = [
-    { title: "整體", market_value: allocation.overall.market_value, positions: allocation.overall.positions || [] },
-    ...(allocation.portfolios || []).map((portfolio) => ({
-      title: portfolio.portfolio,
-      market_value: portfolio.market_value,
-      positions: portfolio.positions || [],
-    })),
-  ];
-  byId("allocationGrid").innerHTML = groups.map((group) => renderAllocationGroup(group, currency)).join("");
+  const selected = allocation.selected || allocation.overall || {};
+  const positions = [...(selected.positions || [])]
+    .filter((position) => Number(position.market_value || 0) > 0)
+    .sort((a, b) => Number(b.allocation_pct || 0) - Number(a.allocation_pct || 0));
+  const scope = allocation.portfolio && allocation.portfolio !== "All" ? allocation.portfolio : "整體投資";
+
+  container.innerHTML = `
+    <div class="allocation-summary">
+      <span>範圍</span>
+      <strong>${escapeHtml(scope)}</strong>
+      <small>${money(selected.market_value, currency)}</small>
+    </div>
+    <div class="allocation-pie-stage">
+      <svg id="allocationPieChart" class="allocation-pie-chart" role="img" aria-label="持股占比圓餅圖"></svg>
+    </div>
+    <div id="allocationLegend" class="allocation-legend"></div>`;
+
+  drawAllocationPie(byId("allocationPieChart"), positions, currency);
+  renderAllocationLegend(positions, currency);
 }
 
-function renderAllocationGroup(group, currency) {
-  const positions = [...group.positions].sort((a, b) => Number(b.allocation_pct || 0) - Number(a.allocation_pct || 0));
-  const rows = positions.length
-    ? positions
-        .map(
-          (position) => `
-      <div class="allocation-row">
-        <span class="allocation-symbol">${escapeHtml(position.symbol)} <small>${escapeHtml(position.currency)}</small></span>
-        <span class="allocation-track"><span class="allocation-fill" style="width:${Math.min(100, Math.max(0, Number(position.allocation_pct || 0) * 100))}%"></span></span>
-        <span class="allocation-percent">${pct(position.allocation_pct)}</span>
+function renderAllocationLegend(positions, currency) {
+  const legend = byId("allocationLegend");
+  if (!positions.length) {
+    legend.innerHTML = `<p class="empty">尚無持股</p>`;
+    return;
+  }
+  legend.innerHTML = positions
+    .map(
+      (position, index) => `
+      <div class="allocation-legend-row">
+        <span class="allocation-legend-swatch" style="background:${allocationColor(index)}"></span>
+        <span class="allocation-legend-main">
+          <strong>${escapeHtml(position.symbol)}</strong>
+          <small>${escapeHtml(position.currency)} · ${number(position.quantity)} 股</small>
+        </span>
+        <span class="allocation-legend-value">
+          <strong>${pct(position.allocation_pct)}</strong>
+          <small>${money(position.market_value, currency)}</small>
+        </span>
       </div>`,
-        )
-        .join("")
-    : `<p class="empty">尚無持股</p>`;
-  return `<section class="allocation-group"><h3>${escapeHtml(group.title)} <span>${money(group.market_value, currency)}</span></h3>${rows}</section>`;
+    )
+    .join("");
+}
+
+function drawAllocationPie(svg, positions, currency) {
+  clearSvg(svg);
+  const { width, height } = chartSize(svg, 480);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const total = positions.reduce((sum, position) => sum + Number(position.market_value || 0), 0);
+  if (!positions.length || total <= 0) {
+    drawEmpty(svg, width, height, "尚無持股資料");
+    return;
+  }
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = Math.max(86, Math.min(width, height) * 0.36);
+  const hoverGroup = addSvg(svg, "g", { "pointer-events": "none" });
+  let startAngle = -90;
+
+  positions.forEach((position, index) => {
+    const value = Number(position.market_value || 0);
+    const endAngle = index === positions.length - 1 ? 270 : startAngle + (value / total) * 360;
+    const segmentAngle = endAngle - startAngle;
+    const color = allocationColor(index);
+    const segment =
+      segmentAngle >= 359.99
+        ? addSvg(svg, "circle", { cx: centerX, cy: centerY, r: radius, fill: color })
+        : addSvg(svg, "path", { d: pieSlicePath(centerX, centerY, radius, startAngle, endAngle), fill: color });
+    segment.classList.add("allocation-slice");
+    segment.setAttribute("stroke", "#fff");
+    segment.setAttribute("stroke-width", "2");
+    segment.setAttribute("tabindex", "0");
+    segment.setAttribute(
+      "aria-label",
+      `${position.symbol} ${pct(position.allocation_pct)} ${money(position.market_value, currency)}`,
+    );
+
+    const midpoint = startAngle + segmentAngle / 2;
+    const fallbackPoint = {
+      x: centerX + Math.cos((midpoint * Math.PI) / 180) * radius * 0.58,
+      y: centerY + Math.sin((midpoint * Math.PI) / 180) * radius * 0.58,
+    };
+    const showTooltip = (event) => {
+      document.querySelectorAll(".allocation-slice.active").forEach((item) => item.classList.remove("active"));
+      segment.classList.add("active");
+      const point = event && "clientX" in event ? svgPointer(svg, event, width, height) : fallbackPoint;
+      drawPieHover(hoverGroup, {
+        x: point.x,
+        y: point.y,
+        width,
+        height,
+        title: `${position.symbol} · ${position.currency}`,
+        rows: [
+          { label: "市值", value: money(position.market_value, currency), color },
+          { label: "占比", value: pct(position.allocation_pct), color },
+          { label: "股數", value: number(position.quantity), color },
+          { label: "原幣", value: position.currency, color },
+        ],
+      });
+    };
+    const clearTooltip = () => {
+      segment.classList.remove("active");
+      clearSvg(hoverGroup);
+    };
+    segment.addEventListener("mouseenter", showTooltip);
+    segment.addEventListener("mousemove", showTooltip);
+    segment.addEventListener("focus", showTooltip);
+    segment.addEventListener("mouseleave", clearTooltip);
+    segment.addEventListener("blur", clearTooltip);
+    startAngle = endAngle;
+  });
+}
+
+function drawPieHover(group, config) {
+  clearSvg(group);
+  addSvg(group, "circle", {
+    cx: config.x,
+    cy: config.y,
+    r: "4",
+    fill: "#17202a",
+    stroke: "#fff",
+    "stroke-width": "2",
+  });
+
+  const textRows = [config.title, ...config.rows.map((row) => `${row.label}: ${row.value}`)];
+  const tooltipWidth = Math.max(180, Math.min(300, Math.max(...textRows.map((text) => text.length)) * 8 + 30));
+  const tooltipHeight = 30 + config.rows.length * 20;
+  const preferredX = config.x + 14;
+  const preferredY = config.y + 14;
+  const x = clamp(
+    preferredX + tooltipWidth > config.width - 8 ? config.x - tooltipWidth - 14 : preferredX,
+    8,
+    config.width - tooltipWidth - 8,
+  );
+  const y = clamp(
+    preferredY + tooltipHeight > config.height - 8 ? config.y - tooltipHeight - 14 : preferredY,
+    8,
+    config.height - tooltipHeight - 8,
+  );
+
+  addSvg(group, "rect", {
+    x,
+    y,
+    width: tooltipWidth,
+    height: tooltipHeight,
+    rx: "6",
+    fill: colors.tooltipBg,
+    stroke: colors.tooltipStroke,
+    "stroke-width": "1",
+  });
+  addSvg(group, "text", {
+    x: x + 12,
+    y: y + 20,
+    fill: "#17202a",
+    "font-size": "12",
+    "font-weight": "700",
+  }).textContent = config.title;
+  config.rows.forEach((row, index) => {
+    addSvg(group, "circle", {
+      cx: x + 12,
+      cy: y + 40 + index * 20,
+      r: "4",
+      fill: row.color,
+    });
+    addSvg(group, "text", {
+      x: x + 24,
+      y: y + 44 + index * 20,
+      fill: "#17202a",
+      "font-size": "12",
+    }).textContent = `${row.label}: ${row.value}`;
+  });
+}
+
+function pieSlicePath(centerX, centerY, radius, startAngle, endAngle) {
+  const start = polarPoint(centerX, centerY, radius, startAngle);
+  const end = polarPoint(centerX, centerY, radius, endAngle);
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  return [
+    `M ${centerX.toFixed(2)} ${centerY.toFixed(2)}`,
+    `L ${start.x.toFixed(2)} ${start.y.toFixed(2)}`,
+    `A ${radius.toFixed(2)} ${radius.toFixed(2)} 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`,
+    "Z",
+  ].join(" ");
+}
+
+function polarPoint(centerX, centerY, radius, angle) {
+  const radians = (angle * Math.PI) / 180;
+  return {
+    x: centerX + radius * Math.cos(radians),
+    y: centerY + radius * Math.sin(radians),
+  };
+}
+
+function allocationColor(index) {
+  return allocationPalette[index % allocationPalette.length];
 }
 
 function renderPerformance() {
@@ -842,7 +1016,10 @@ function inferCurrency(symbol) {
 
 function scheduleChartRender() {
   clearTimeout(state.resizeTimer);
-  state.resizeTimer = setTimeout(renderPerformance, 120);
+  state.resizeTimer = setTimeout(() => {
+    renderPerformance();
+    renderAllocation();
+  }, 120);
 }
 
 function chartSize(svg, fallbackWidth) {

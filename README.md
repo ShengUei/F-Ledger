@@ -13,7 +13,7 @@ loaded from Yahoo Finance through its public chart endpoint.
 - Query performance for any date range.
 - Assign trades and dividends to portfolios such as `Active` or `DCA`.
 - Filter performance by one portfolio or view all portfolios together.
-- View holding allocation for the full account and for each portfolio.
+- View holding allocation as an interactive pie chart for all holdings or one selected portfolio.
 - Record source currency for US and Taiwan stock trades and dividends.
 - Switch report display currency between TWD and USD.
 - Download a trade import template and upload CSV files to add many trades at once.
