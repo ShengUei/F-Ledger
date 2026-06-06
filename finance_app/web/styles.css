@@ -18,9 +18,18 @@
   box-sizing: border-box;
 }
 
+html {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
+  width: 100%;
+  max-width: 100%;
   min-width: 320px;
+  overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", "Noto Sans TC", Arial, sans-serif;
@@ -39,6 +48,7 @@ select {
   justify-content: space-between;
   gap: 16px;
   min-height: 76px;
+  max-width: 100%;
   padding: 18px 28px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
@@ -76,12 +86,13 @@ select {
 
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, clamp(320px, 28vw, 440px));
+  grid-template-columns: minmax(0, 1fr) minmax(300px, min(30vw, 420px));
   gap: 18px;
   width: 100%;
-  max-width: 1680px;
+  max-width: 100%;
   margin: 0 auto;
   padding: 18px;
+  overflow-x: clip;
 }
 
 .workspace,
@@ -89,6 +100,7 @@ select {
   display: grid;
   gap: 18px;
   align-content: start;
+  min-width: 0;
 }
 
 .toolbar,
@@ -97,6 +109,7 @@ select {
 .table-panel,
 .form-panel,
 .allocation-panel {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -109,11 +122,12 @@ select {
   align-items: end;
   gap: 12px;
   padding: 14px;
+  min-width: 0;
 }
 
 .toolbar label {
   flex: 1 1 150px;
-  min-width: 140px;
+  min-width: 0;
 }
 
 .toolbar .segmented {
@@ -175,6 +189,7 @@ button:focus-visible {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 0;
   overflow: hidden;
+  min-width: 0;
 }
 
 .metric {
@@ -209,8 +224,9 @@ button:focus-visible {
 
 .chart-grid {
   display: grid;
-  grid-template-columns: minmax(360px, 1.35fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.85fr);
   gap: 18px;
+  min-width: 0;
 }
 
 .performance-panel {
@@ -220,6 +236,7 @@ button:focus-visible {
 .chart-panel {
   min-height: 360px;
   padding: 16px;
+  overflow: hidden;
 }
 
 .chart-panel header,
@@ -240,8 +257,9 @@ h2 {
 svg {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: clamp(240px, 34vh, 360px);
-  overflow: visible;
+  overflow: hidden;
 }
 
 .legend {
@@ -279,8 +297,9 @@ svg {
 
 .allocation-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 18px 24px;
+  min-width: 0;
 }
 
 .allocation-group {
@@ -344,6 +363,8 @@ svg {
 
 .table-wrap {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -397,7 +418,7 @@ tr:last-child td {
 
 .record-form {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-top: 14px;
 }
@@ -444,7 +465,7 @@ tr:last-child td {
   }
 
   .side-rail {
-    grid-template-columns: minmax(300px, 0.85fr) minmax(0, 1.15fr);
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   }
 }
 
@@ -492,6 +513,6 @@ tr:last-child td {
   }
 
   .toolbar label {
-    min-width: min(100%, 170px);
+    flex-basis: min(100%, 170px);
   }
 }
