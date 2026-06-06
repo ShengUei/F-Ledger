@@ -151,3 +151,7 @@ When a report display currency is selected:
 9. A user can view holding allocation for the full account and for each portfolio.
 10. A user can record source currency for US and Taiwan stock transactions.
 11. A user can switch the report display currency between TWD and USD.
+12. Holdings, allocation, performance charts, and annual charts update when the display currency changes.
+13. A user can choose chart X-axis label format and Y-axis value mode.
+14. A user can hover a chart to inspect the nearest point or annual bar values.
+15. A user can select an existing portfolio from a dropdown or create a new portfolio while adding a record.

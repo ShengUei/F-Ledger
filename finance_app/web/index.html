@@ -60,6 +60,24 @@
               <h2>資產與損益</h2>
               <div class="legend" id="performanceLegend"></div>
             </header>
+            <div class="chart-options">
+              <label>
+                X軸
+                <select id="performanceXAxisMode">
+                  <option value="auto">自動</option>
+                  <option value="full">完整日期</option>
+                  <option value="month">年月</option>
+                  <option value="year">年份</option>
+                </select>
+              </label>
+              <label>
+                Y軸
+                <select id="performanceYAxisMode">
+                  <option value="amount">金額</option>
+                  <option value="return_pct">報酬率</option>
+                </select>
+              </label>
+            </div>
             <svg id="performanceChart" role="img" aria-label="資產與損益圖表"></svg>
           </article>
           <article class="chart-panel">
@@ -67,6 +85,24 @@
               <h2>年度績效</h2>
               <div class="legend" id="annualLegend"></div>
             </header>
+            <div class="chart-options">
+              <label>
+                X軸
+                <select id="annualXAxisMode">
+                  <option value="auto">自動</option>
+                  <option value="full">完整日期</option>
+                  <option value="year">年份</option>
+                  <option value="short_year">短年份</option>
+                </select>
+              </label>
+              <label>
+                Y軸
+                <select id="annualYAxisMode">
+                  <option value="amount">金額</option>
+                  <option value="return_pct">報酬率</option>
+                </select>
+              </label>
+            </div>
             <svg id="annualChart" role="img" aria-label="年度績效圖表"></svg>
           </article>
         </section>
@@ -121,7 +157,11 @@
             </label>
             <label>
               投資組合
-              <input name="portfolio" type="text" list="portfolioOptions" value="General" required />
+              <select name="portfolio" data-portfolio-select required></select>
+            </label>
+            <label class="portfolio-new hidden">
+              新投資組合
+              <input name="new_portfolio" type="text" />
             </label>
             <label>
               原幣
@@ -167,7 +207,11 @@
             </label>
             <label>
               投資組合
-              <input name="portfolio" type="text" list="portfolioOptions" value="General" required />
+              <select name="portfolio" data-portfolio-select required></select>
+            </label>
+            <label class="portfolio-new hidden">
+              新投資組合
+              <input name="new_portfolio" type="text" />
             </label>
             <label>
               原幣
@@ -190,7 +234,6 @@
             </label>
             <button class="primary" type="submit">新增配息</button>
           </form>
-          <datalist id="portfolioOptions"></datalist>
         </section>
 
         <section class="table-panel compact">
