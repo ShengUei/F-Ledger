@@ -15,7 +15,31 @@ class NoopPriceProvider:
         return 1.0
 
 
+class FixedPriceProvider(NoopPriceProvider):
+    def __init__(self, prices):
+        self.prices = prices
+
+    def get_prices(self, symbol, start, end):
+        return {item_date: price for item_date, price in self.prices.get(symbol, {}).items() if start <= item_date <= end}
+
+
 class ServerAPITests(unittest.TestCase):
+    def test_default_dates_use_latest_market_day_and_current_year_start(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(
+                CSVStore(temp_dir),
+                FixedPriceProvider({"^TWII": {date(2026, 6, 5): 100.0}}),
+                today=date(2026, 6, 7),
+            )
+
+            status, payload = handle_api_request(context, "GET", "/api/defaults", {}, b"")
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["today"], "2026-06-07")
+            self.assertEqual(payload["as_of"], "2026-06-05")
+            self.assertEqual(payload["start"], "2026-01-01")
+            self.assertEqual(payload["end"], "2026-06-07")
+
     def test_create_trade_and_get_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
@@ -58,6 +82,20 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(payload["currency"], "TWD")
             self.assertEqual(payload["positions"][0]["symbol"], "2330.TW")
             self.assertTrue(payload["warnings"])
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/period-summary",
+                {"start": ["2024-01-01"], "end": ["2024-01-03"], "portfolio": ["Active"], "currency": ["TWD"]},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["start"], "2024-01-01")
+            self.assertEqual(payload["end"], "2024-01-03")
+            self.assertEqual(payload["portfolio"], "Active")
+            self.assertEqual(payload["positions"][0]["symbol"], "2330.TW")
 
     def test_allocation_endpoint_returns_overall_and_portfolios(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -166,6 +204,112 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(payload["imported_count"], 2)
             self.assertEqual([trade["symbol"] for trade in payload["trades"]], ["GOOG", "2330.TW"])
             self.assertEqual(len(context.store.list_trades()), 2)
+
+    def test_dividend_import_template_and_batch_import(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/templates/dividends",
+                {},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["filename"], "dividend-import-template.csv")
+            self.assertIn("date,symbol,gross_amount,tax,currency,portfolio,notes", payload["content"])
+
+            status, payload = handle_api_request(
+                context,
+                "POST",
+                "/api/import/dividends",
+                {},
+                json.dumps(
+                    {
+                        "records": [
+                            {
+                                "date": "2024-02-01",
+                                "symbol": "GOOG",
+                                "gross_amount": "10",
+                                "tax": "3",
+                                "currency": "USD",
+                                "portfolio": "Active",
+                                "notes": "batch dividend",
+                            },
+                            {
+                                "date": "2024-03-01",
+                                "symbol": "2330.TW",
+                                "gross_amount": "20",
+                                "tax": "0",
+                                "currency": "TWD",
+                                "portfolio": "DCA",
+                                "notes": "",
+                            },
+                        ]
+                    }
+                ).encode("utf-8"),
+            )
+
+            self.assertEqual(status, 201)
+            self.assertEqual(payload["imported_count"], 2)
+            self.assertEqual([dividend["symbol"] for dividend in payload["dividends"]], ["GOOG", "2330.TW"])
+            self.assertEqual(len(context.store.list_dividends()), 2)
+
+    def test_records_endpoint_filters_and_paginates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            for portfolio, symbol in [("Active", "GOOG"), ("DCA", "MSFT")]:
+                handle_api_request(
+                    context,
+                    "POST",
+                    "/api/trades",
+                    {},
+                    json.dumps(
+                        {
+                            "date": "2024-01-02",
+                            "symbol": symbol,
+                            "side": "BUY",
+                            "quantity": 1,
+                            "price": 100,
+                            "portfolio": portfolio,
+                            "currency": "USD",
+                        }
+                    ).encode("utf-8"),
+                )
+            handle_api_request(
+                context,
+                "POST",
+                "/api/dividends",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-02-01",
+                        "symbol": "GOOG",
+                        "gross_amount": 10,
+                        "tax": 0,
+                        "portfolio": "Active",
+                        "currency": "USD",
+                    }
+                ).encode("utf-8"),
+            )
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/records",
+                {"kind": ["trade"], "portfolio": ["Active"], "symbol": ["goo"], "page": ["1"], "page_size": ["1"]},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["page"], 1)
+            self.assertEqual(payload["page_size"], 1)
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(payload["total_pages"], 1)
+            self.assertEqual(payload["records"][0]["kind"], "trade")
+            self.assertEqual(payload["records"][0]["symbol"], "GOOG")
 
     def test_trade_import_rejects_invalid_batch_without_partial_write(self):
         with tempfile.TemporaryDirectory() as temp_dir:

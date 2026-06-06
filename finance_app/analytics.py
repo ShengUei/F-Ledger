@@ -130,6 +130,72 @@ class PortfolioAnalytics:
             "warnings": warnings + [warning for state in states.values() for warning in state.warnings],
         }
 
+    def period_summary(
+        self,
+        trades: list[Trade],
+        dividends: list[Dividend],
+        start: date,
+        end: date,
+        portfolio: str | None = None,
+        display_currency: str = DEFAULT_DISPLAY_CURRENCY,
+    ) -> dict:
+        if end < start:
+            raise ValueError("end must be on or after start")
+        report_currency = normalize_report_currency(display_currency)
+        portfolio_filter = normalize_portfolio_filter(portfolio)
+        filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
+        ending = self.summary(filtered_trades, filtered_dividends, end, display_currency=report_currency)
+        baseline_date = start - timedelta(days=1)
+        baseline = (
+            self.summary(filtered_trades, filtered_dividends, baseline_date, display_currency=report_currency)
+            if baseline_date >= date(1900, 1, 1)
+            else None
+        )
+        baseline_total_gain = baseline["total_gain"] if baseline else 0.0
+        baseline_market_value = baseline["market_value"] if baseline else 0.0
+        baseline_realized_gain = baseline["realized_gain"] if baseline else 0.0
+        baseline_cash_flow = baseline["cash_flow"] if baseline else 0.0
+        warnings: list[str] = []
+        period_trades = [trade for trade in filtered_trades if start <= trade.date <= end]
+        period_dividends = [dividend for dividend in filtered_dividends if start <= dividend.date <= end]
+        buy_cost = sum(
+            self._convert(trade.quantity * trade.price + trade.fees, trade.currency, report_currency, trade.date, warnings)
+            for trade in period_trades
+            if trade.side == "BUY"
+        )
+        sell_proceeds = sum(
+            self._convert(trade.quantity * trade.price - trade.fees, trade.currency, report_currency, trade.date, warnings)
+            for trade in period_trades
+            if trade.side == "SELL"
+        )
+        dividends_total = sum(
+            self._convert(dividend.net_amount, dividend.currency, report_currency, dividend.date, warnings)
+            for dividend in period_dividends
+        )
+        total_gain = ending["total_gain"] - baseline_total_gain
+        realized_gain = ending["realized_gain"] - baseline_realized_gain
+        return_base = buy_cost or baseline_market_value or ending["buy_cost"]
+
+        return {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "as_of": ending["as_of"],
+            "portfolio": portfolio_filter or "All",
+            "currency": report_currency,
+            "market_value": ending["market_value"],
+            "market_value_change": round_money(ending["market_value"] - baseline_market_value),
+            "buy_cost": round_money(buy_cost),
+            "sell_proceeds": round_money(sell_proceeds),
+            "cash_flow": round_money(ending["cash_flow"] - baseline_cash_flow),
+            "realized_gain": round_money(realized_gain),
+            "sell_gain": round_money(realized_gain),
+            "dividends": round_money(dividends_total),
+            "total_gain": round_money(total_gain),
+            "return_pct": round_number(total_gain / return_base if return_base else 0.0),
+            "positions": ending["positions"],
+            "warnings": ending["warnings"] + warnings,
+        }
+
     def performance(
         self,
         trades: list[Trade],

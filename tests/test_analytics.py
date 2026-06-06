@@ -121,6 +121,35 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertEqual([position["symbol"] for position in active_result["selected"]["positions"]], ["GOOG", "MSFT"])
         self.assertAlmostEqual(active_result["selected"]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
 
+    def test_period_summary_reports_values_for_selected_date_range(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
+            Trade("", date(2024, 3, 1), "AAPL", "BUY", 5, 20, 0, ""),
+            Trade("", date(2024, 7, 1), "AAPL", "SELL", 4, 30, 0, ""),
+        ]
+        dividends = [
+            Dividend("", date(2024, 8, 1), "AAPL", 20, 0, ""),
+        ]
+        prices = {
+            "AAPL": {
+                date(2024, 5, 31): 15,
+                date(2024, 9, 30): 25,
+            }
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.period_summary(trades, dividends, date(2024, 6, 1), date(2024, 9, 30))
+
+        self.assertEqual(result["start"], "2024-06-01")
+        self.assertEqual(result["end"], "2024-09-30")
+        self.assertAlmostEqual(result["market_value"], 275.0, places=2)
+        self.assertAlmostEqual(result["market_value_change"], 50.0, places=2)
+        self.assertAlmostEqual(result["sell_proceeds"], 120.0, places=2)
+        self.assertAlmostEqual(result["realized_gain"], 66.67, places=2)
+        self.assertAlmostEqual(result["sell_gain"], 66.67, places=2)
+        self.assertAlmostEqual(result["dividends"], 20.0, places=2)
+        self.assertAlmostEqual(result["total_gain"], 190.0, places=2)
+
     def test_summary_converts_us_and_taiwan_holdings_to_display_currency(self):
         trades = [
             Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", "Active", currency="USD"),

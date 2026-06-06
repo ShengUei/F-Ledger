@@ -13,6 +13,8 @@ selected date range.
 - No Redis, database, ELK, or external service.
 - User records and cached market data are managed as CSV files.
 - The application is started locally and used through a browser.
+- Charts use the vendored browser build of Chart.js 4.5.0, an MIT-licensed
+  open-source JavaScript charting library.
 - The design should keep room for future features.
 - Development follows SDD and TDD: this file defines behavior; tests protect
   storage, calculation, and API behavior.
@@ -115,6 +117,11 @@ At a valuation date:
 If Yahoo price data is unavailable, the engine uses the latest transaction price
 before the valuation date as a fallback and returns a warning.
 
+For a selected date range, period summary compares the ending summary with the
+summary from the day before the start date. Market value is the ending market
+value; total gain, realized gain, sell gain, dividends, and cash flow are shown
+for the selected period.
+
 When a report display currency is selected:
 
 - BUY and SELL cash flows use the transaction-date FX rate.
@@ -128,15 +135,19 @@ When a report display currency is selected:
 
 | method | path | behavior |
 | --- | --- | --- |
-| GET | `/api/records` | returns all trades and dividends |
+| GET | `/api/defaults` | returns default as-of, start, and end dates; as-of uses the latest Yahoo market day when possible |
+| GET | `/api/records?kind=trade&page=1&page_size=25&portfolio=Active&symbol=GOOG` | returns filtered and paginated records |
 | POST | `/api/trades` | creates a trade |
 | GET | `/api/templates/trades` | returns a CSV template for trade batch import |
 | POST | `/api/import/trades` | imports multiple trade records from parsed CSV rows |
 | DELETE | `/api/trades/{id}` | deletes a trade |
 | POST | `/api/dividends` | creates a dividend |
+| GET | `/api/templates/dividends` | returns a CSV template for dividend batch import |
+| POST | `/api/import/dividends` | imports multiple dividend records from parsed CSV rows |
 | DELETE | `/api/dividends/{id}` | deletes a dividend |
 | GET | `/api/portfolios` | returns available portfolio names |
 | GET | `/api/summary?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns all-portfolio or selected-portfolio summary in a display currency |
+| GET | `/api/period-summary?start=YYYY-MM-DD&end=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns date-range metrics and ending positions |
 | GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly&portfolio=Active&currency=TWD` | returns filtered performance series and annual bars |
 | GET | `/api/allocation?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns selected, overall, and per-portfolio holding weights |
 
@@ -159,3 +170,7 @@ When a report display currency is selected:
 15. A user can select an existing portfolio from a dropdown or create a new portfolio while adding a record.
 16. A user can download a trade CSV import template.
 17. A user can upload a trade CSV file and import multiple trade records at once.
+18. A user can download a dividend CSV import template and import multiple dividend records at once.
+19. Records are hidden by default and can be shown with filtering and pagination.
+20. The default start date is January 1 of the current year, end date is today, and as-of date is the latest available trading day when today is not a trading day.
+21. Top-level metrics update from the selected date range instead of always showing all-time values.

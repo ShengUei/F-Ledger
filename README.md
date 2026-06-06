@@ -8,15 +8,17 @@ loaded from Yahoo Finance through its public chart endpoint.
 
 - Record stock buy/sell transactions.
 - Record dividend income and taxes.
-- View current holdings, realized gain, dividends, market value, and total gain.
-- Chart portfolio value, total gain, dividends, and yearly performance.
+- View date-range market value, total gain, realized gain, sell gain, and dividends.
+- Chart portfolio value, total gain, dividends, yearly performance, and allocation with Chart.js.
 - Query performance for any date range.
 - Assign trades and dividends to portfolios such as `Active` or `DCA`.
 - Filter performance by one portfolio or view all portfolios together.
 - View holding allocation as an interactive pie chart for all holdings or one selected portfolio.
 - Record source currency for US and Taiwan stock trades and dividends.
 - Switch report display currency between TWD and USD.
-- Download a trade import template and upload CSV files to add many trades at once.
+- Default dates use the current year start, today as range end, and the latest available trading day as the settlement date.
+- Download trade and dividend import templates and upload CSV files to add many records at once.
+- Keep the record table hidden by default, then filter and paginate it when needed.
 - No database, Redis, ELK, or external service is required.
 
 ## Quick Start
@@ -71,6 +73,20 @@ Required columns are `date`, `symbol`, `side`, `quantity`, and `price`.
 Missing `fees` defaults to `0`; missing `currency` and `portfolio` are inferred
 by the app.
 
+## Dividend Import
+
+Use the WebUI batch import panel to download `dividend-import-template.csv`.
+The uploaded CSV should use these columns:
+
+```csv
+date,symbol,gross_amount,tax,currency,portfolio,notes
+2024-02-01,GOOG,10,3,USD,Active,example dividend
+2024-03-01,2330.TW,20,0,TWD,DCA,example dividend
+```
+
+Required columns are `date`, `symbol`, and `gross_amount`. Missing `tax`
+defaults to `0`; missing `currency` and `portfolio` are inferred by the app.
+
 ## Tests
 
 ```powershell
@@ -81,7 +97,7 @@ python -m unittest discover -s tests
 ## Design Notes
 
 - The backend uses only the Python standard library.
-- The frontend uses vanilla HTML, CSS, and JavaScript.
+- The frontend uses vanilla HTML, CSS, JavaScript, and a vendored Chart.js browser build.
 - CSV schemas are documented in `docs/spec.md`.
 - Core portfolio math is isolated from HTTP and storage code, so new features
   can be added without rewriting the UI or data layer.

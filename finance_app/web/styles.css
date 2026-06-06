@@ -272,7 +272,8 @@ h2 {
   line-height: 1.3;
 }
 
-svg {
+svg,
+canvas {
   display: block;
   width: 100%;
   max-width: 100%;
@@ -496,6 +497,7 @@ tr:last-child td {
 
 .import-panel header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -510,6 +512,40 @@ tr:last-child td {
   min-height: 20px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.records-panel header {
+  align-items: center;
+}
+
+.records-panel-body {
+  display: grid;
+  gap: 12px;
+}
+
+.record-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.record-filters label:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pagination button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .primary {

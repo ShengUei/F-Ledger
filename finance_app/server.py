@@ -16,6 +16,15 @@ from .pricing import YahooFinanceProvider
 from .storage import CSVStore, StorageBackend
 
 
+DIVIDEND_IMPORT_TEMPLATE = (
+    "date,symbol,gross_amount,tax,currency,portfolio,notes\n"
+    "2024-02-01,GOOG,10,3,USD,Active,example dividend\n"
+    "2024-03-01,2330.TW,20,0,TWD,DCA,example dividend\n"
+)
+
+DEFAULT_MARKET_SYMBOLS = ("^TWII", "SPY")
+
+
 TRADE_IMPORT_TEMPLATE = (
     "date,symbol,side,quantity,price,fees,currency,portfolio,notes\n"
     "2024-01-02,GOOG,BUY,10,100,1,USD,美股,example buy\n"
@@ -29,6 +38,7 @@ class AppContext:
     price_provider: object
     result_cache: ResultCache | None = None
     web_dir: Path | None = None
+    today: date | None = None
 
 
 def handle_api_request(
@@ -55,21 +65,28 @@ def _handle_api_request(
     analytics = PortfolioAnalytics(context.price_provider, context.result_cache)
 
     if method == "GET" and path == "/api/records":
-        return 200, {
-            "trades": [trade.to_json() for trade in store.list_trades()],
-            "dividends": [dividend.to_json() for dividend in store.list_dividends()],
-        }
+        return 200, _records_payload(store.list_trades(), store.list_dividends(), query)
 
     if method == "GET" and path == "/api/portfolios":
         trades = store.list_trades()
         dividends = store.list_dividends()
         return 200, {"portfolios": portfolio_names(trades, dividends)}
 
+    if method == "GET" and path == "/api/defaults":
+        return 200, _default_dates(context.price_provider, context.today or date.today())
+
     if method == "GET" and path == "/api/templates/trades":
         return 200, {
             "filename": "trade-import-template.csv",
             "content_type": "text/csv; charset=utf-8",
             "content": TRADE_IMPORT_TEMPLATE,
+        }
+
+    if method == "GET" and path == "/api/templates/dividends":
+        return 200, {
+            "filename": "dividend-import-template.csv",
+            "content_type": "text/csv; charset=utf-8",
+            "content": DIVIDEND_IMPORT_TEMPLATE,
         }
 
     if method == "POST" and path == "/api/trades":
@@ -101,6 +118,23 @@ def _handle_api_request(
         _clear_result_cache(context)
         return 201, {"dividend": dividend.to_json()}
 
+    if method == "POST" and path == "/api/import/dividends":
+        payload = _read_json(body)
+        raw_records = payload.get("records")
+        if not isinstance(raw_records, list) or not raw_records:
+            raise ValueError("records must be a non-empty list")
+        dividends = []
+        for index, record in enumerate(raw_records, start=1):
+            if not isinstance(record, dict):
+                raise ValueError(f"row {index}: record must be an object")
+            try:
+                dividends.append(Dividend.from_dict(record))
+            except ValueError as exc:
+                raise ValueError(f"row {index}: {exc}") from exc
+        saved = [store.add_dividend(dividend) for dividend in dividends]
+        _clear_result_cache(context)
+        return 201, {"imported_count": len(saved), "dividends": [dividend.to_json() for dividend in saved]}
+
     if method == "DELETE" and path.startswith("/api/trades/"):
         record_id = path.rsplit("/", 1)[-1]
         deleted = store.delete_trade(record_id)
@@ -123,6 +157,23 @@ def _handle_api_request(
             store.list_trades(),
             store.list_dividends(),
             as_of,
+            portfolio=portfolio,
+            display_currency=currency,
+        )
+
+    if method == "GET" and path == "/api/period-summary":
+        trades = store.list_trades()
+        dividends = store.list_dividends()
+        default_start, default_end = _default_range(trades, dividends)
+        start = parse_date(_query_one(query, "start", default_start.isoformat()), "start")
+        end = parse_date(_query_one(query, "end", default_end.isoformat()), "end")
+        portfolio = _query_optional(query, "portfolio")
+        currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
+        return 200, analytics.period_summary(
+            trades,
+            dividends,
+            start,
+            end,
             portfolio=portfolio,
             display_currency=currency,
         )
@@ -161,6 +212,100 @@ def _handle_api_request(
     return 404, {"error": "not found"}
 
 
+def _default_dates(price_provider: object, today: date) -> dict:
+    start = date(today.year, 1, 1)
+    search_start = today - timedelta(days=14)
+    latest_market_day = None
+    for symbol in DEFAULT_MARKET_SYMBOLS:
+        try:
+            prices = price_provider.get_prices(symbol, search_start, today)
+        except Exception:
+            prices = {}
+        candidates = [item_date for item_date in prices if item_date <= today]
+        if candidates:
+            candidate = max(candidates)
+            latest_market_day = max(latest_market_day, candidate) if latest_market_day else candidate
+    if latest_market_day is None:
+        latest_market_day = _previous_weekday(today)
+    return {
+        "today": today.isoformat(),
+        "as_of": latest_market_day.isoformat(),
+        "start": start.isoformat(),
+        "end": today.isoformat(),
+    }
+
+
+def _previous_weekday(day: date) -> date:
+    current = day
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def _records_payload(trades: list[Trade], dividends: list[Dividend], query: dict[str, list[str]]) -> dict:
+    records = [_trade_record(trade) for trade in trades] + [_dividend_record(dividend) for dividend in dividends]
+    records.sort(key=lambda item: (item["date"], item["symbol"], item["id"]), reverse=True)
+    kind = (_query_one(query, "kind", "all") or "all").lower()
+    symbol = (_query_optional(query, "symbol") or "").strip().upper()
+    portfolio = _query_optional(query, "portfolio")
+    portfolio = None if not portfolio or portfolio == "All" else portfolio
+    start_text = _query_optional(query, "start")
+    end_text = _query_optional(query, "end")
+    start = parse_date(start_text, "start") if start_text else None
+    end = parse_date(end_text, "end") if end_text else None
+
+    if kind in {"trade", "dividend"}:
+        records = [record for record in records if record["kind"] == kind]
+    if symbol:
+        records = [record for record in records if symbol in record["symbol"].upper()]
+    if portfolio:
+        records = [record for record in records if record["portfolio"] == portfolio]
+    if start:
+        records = [record for record in records if parse_date(record["date"]) >= start]
+    if end:
+        records = [record for record in records if parse_date(record["date"]) <= end]
+
+    page_size = min(200, max(1, _query_int(query, "page_size", 25)))
+    total = len(records)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(total_pages, max(1, _query_int(query, "page", 1)))
+    offset = (page - 1) * page_size
+    return {
+        "records": records[offset : offset + page_size],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
+
+
+def _trade_record(trade: Trade) -> dict:
+    amount = trade.quantity * trade.price + trade.fees if trade.side == "BUY" else trade.quantity * trade.price - trade.fees
+    return {
+        "kind": "trade",
+        "id": trade.id,
+        "date": trade.date.isoformat(),
+        "symbol": trade.symbol,
+        "portfolio": trade.portfolio,
+        "currency": trade.currency,
+        "type": trade.side,
+        "amount": amount,
+    }
+
+
+def _dividend_record(dividend: Dividend) -> dict:
+    return {
+        "kind": "dividend",
+        "id": dividend.id,
+        "date": dividend.date.isoformat(),
+        "symbol": dividend.symbol,
+        "portfolio": dividend.portfolio,
+        "currency": dividend.currency,
+        "type": "DIVIDEND",
+        "amount": dividend.net_amount,
+    }
+
+
 def _read_json(body: bytes) -> dict:
     if not body:
         raise ValueError("request body is required")
@@ -185,6 +330,14 @@ def _query_optional(query: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0] or None
+
+
+def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:
+    value = _query_one(query, key, str(default))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} must be an integer") from None
 
 
 def _clear_result_cache(context: AppContext) -> None:
