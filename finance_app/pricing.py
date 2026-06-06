@@ -21,7 +21,7 @@ class YahooFinanceProvider:
     def get_prices(self, symbol: str, start: date, end: date) -> dict[date, float]:
         if end < start:
             return {}
-        cached = self._read_cache(symbol)
+        cached = self._read_cache(symbol, start, end)
         needs_fetch = self._needs_fetch(cached, start, end)
         if needs_fetch:
             try:
@@ -30,7 +30,7 @@ class YahooFinanceProvider:
                 fetched = {}
             if fetched:
                 cached.update(fetched)
-                self._write_cache(symbol, cached)
+                self._write_cache(symbol, fetched)
         return {item_date: close for item_date, close in cached.items() if start <= item_date <= end}
 
     def get_fx_rate(self, from_currency: str, to_currency: str, as_of: date) -> float:
@@ -97,12 +97,32 @@ class YahooFinanceProvider:
             prices[item_date] = float(close)
         return prices
 
-    def _cache_path(self, symbol: str) -> Path:
+    def _safe_symbol(self, symbol: str) -> str:
         safe = re.sub(r"[^A-Z0-9._-]+", "_", symbol.upper())
-        return self.cache_dir / f"{safe}.csv"
+        return safe
 
-    def _read_cache(self, symbol: str) -> dict[date, float]:
-        path = self._cache_path(symbol)
+    def _symbol_cache_dir(self, symbol: str) -> Path:
+        return self.cache_dir / self._safe_symbol(symbol)
+
+    def _year_cache_path(self, symbol: str, year: int) -> Path:
+        return self._symbol_cache_dir(symbol) / f"{year}.csv"
+
+    def _legacy_cache_path(self, symbol: str) -> Path:
+        return self.cache_dir / f"{self._safe_symbol(symbol)}.csv"
+
+    def _read_cache(self, symbol: str, start: date | None = None, end: date | None = None) -> dict[date, float]:
+        self._migrate_legacy_cache(symbol)
+        if start and end:
+            years = range(start.year, end.year + 1)
+            paths = [self._year_cache_path(symbol, year) for year in years]
+        else:
+            paths = sorted(self._symbol_cache_dir(symbol).glob("*.csv"))
+        prices: dict[date, float] = {}
+        for path in paths:
+            prices.update(self._read_cache_file(path))
+        return prices
+
+    def _read_cache_file(self, path: Path) -> dict[date, float]:
         if not path.exists():
             return {}
         with path.open("r", newline="", encoding="utf-8-sig") as handle:
@@ -116,7 +136,17 @@ class YahooFinanceProvider:
             return prices
 
     def _write_cache(self, symbol: str, prices: dict[date, float]) -> None:
-        path = self._cache_path(symbol)
+        by_year: dict[int, dict[date, float]] = {}
+        for item_date, close in prices.items():
+            by_year.setdefault(item_date.year, {})[item_date] = close
+        for year, year_prices in by_year.items():
+            path = self._year_cache_path(symbol, year)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            merged = self._read_cache_file(path)
+            merged.update(year_prices)
+            self._write_cache_file(path, merged)
+
+    def _write_cache_file(self, path: Path, prices: dict[date, float]) -> None:
         temp_path = path.with_suffix(path.suffix + ".tmp")
         with temp_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=PRICE_FIELDS)
@@ -124,3 +154,11 @@ class YahooFinanceProvider:
             for item_date in sorted(prices):
                 writer.writerow({"date": item_date.isoformat(), "close": f"{prices[item_date]:.10g}"})
         temp_path.replace(path)
+
+    def _migrate_legacy_cache(self, symbol: str) -> None:
+        legacy_path = self._legacy_cache_path(symbol)
+        if not legacy_path.exists():
+            return
+        legacy_prices = self._read_cache_file(legacy_path)
+        if legacy_prices:
+            self._write_cache(symbol, legacy_prices)

@@ -1,7 +1,9 @@
 import unittest
+import tempfile
 from datetime import date
 
 from finance_app.analytics import PortfolioAnalytics
+from finance_app.cache import JSONResultCache
 from finance_app.models import Dividend, Trade
 
 
@@ -139,6 +141,26 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertAlmostEqual(summary["dividends"], 305.0, places=2)
         self.assertAlmostEqual(summary["total_gain"], 8505.0, places=2)
         self.assertEqual({position["currency"] for position in summary["positions"]}, {"USD", "TWD"})
+
+    def test_performance_result_is_cached_by_records_and_query(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
+        ]
+        prices = {
+            "AAPL": {
+                date(2024, 1, 31): 11,
+                date(2024, 2, 29): 12,
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            analytics = PortfolioAnalytics(FakePriceProvider(prices), result_cache=JSONResultCache(temp_dir))
+            first = analytics.performance(trades, [], date(2024, 1, 1), date(2024, 2, 29), "monthly")
+            second = analytics.performance(trades, [], date(2024, 1, 1), date(2024, 2, 29), "monthly")
+
+            self.assertFalse(first["cache"]["hit"])
+            self.assertTrue(second["cache"]["hit"])
+            self.assertEqual(first["points"], second["points"])
 
 
 if __name__ == "__main__":

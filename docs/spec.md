@@ -19,6 +19,19 @@ selected date range.
 
 ## CSV Files
 
+Current storage schema version is tracked in `data/metadata.json`.
+
+```json
+{
+  "schema_version": 3,
+  "storage_backend": "csv"
+}
+```
+
+The application migrates older CSV files at startup. Existing rows without
+`portfolio` receive `General`; existing rows without `currency` are inferred
+from the symbol.
+
 ### `trades.csv`
 
 | column | type | notes |
@@ -49,12 +62,32 @@ selected date range.
 
 ### Price Cache
 
-Files live in `price_cache/{symbol}.csv`.
+Files live in `price_cache/{symbol}/{year}.csv`, for example
+`price_cache/GOOG/2024.csv`. Legacy flat files such as `price_cache/GOOG.csv`
+are migrated into year files when read.
 
 | column | type | notes |
 | --- | --- | --- |
 | date | YYYY-MM-DD | market date |
 | close | decimal | adjusted close from Yahoo Finance when available |
+
+### Result Cache
+
+Performance results live in `result_cache/{sha256}.json`. The cache key includes
+query parameters plus all trade and dividend records, so changing user records
+creates a different key. Record mutations also clear cached result files.
+
+## Storage Boundary
+
+`StorageBackend` defines the storage contract used by the HTTP layer:
+
+- list, add, and delete trades.
+- list, add, and delete dividends.
+- expose price and result cache directories.
+- clear result cache after data mutations.
+
+`CSVStore` is the current implementation. Future storage formats can implement
+the same protocol without changing analytics or WebUI code.
 
 ## Portfolio Math
 

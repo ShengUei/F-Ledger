@@ -37,7 +37,9 @@ CSV files are created under `data/` by default:
 
 - `data/trades.csv`
 - `data/dividends.csv`
-- `data/price_cache/*.csv`
+- `data/metadata.json`
+- `data/price_cache/{symbol}/{year}.csv`
+- `data/result_cache/{sha256}.json`
 
 Trades and dividends include `portfolio` and `currency` columns. Existing CSV
 files without those columns are migrated automatically. Missing portfolios are
@@ -47,6 +49,11 @@ assigned to `General`; missing currencies are inferred from the symbol, where
 Market prices and FX rates are loaded from Yahoo Finance. FX conversion uses
 transaction-date rates for trades, payment-date rates for dividends, and
 valuation-date rates for current market value.
+
+`data/metadata.json` stores the current CSV schema version. The app migrates
+older CSV headers automatically at startup. `CSVStore` implements the
+`StorageBackend` protocol, so a future storage format can replace CSV without
+rewriting analytics or the WebUI.
 
 ## Tests
 

@@ -1,10 +1,11 @@
 import tempfile
 import unittest
+import json
 from datetime import date
 from pathlib import Path
 
 from finance_app.models import Dividend, Trade
-from finance_app.storage import CSVStore
+from finance_app.storage import CURRENT_SCHEMA_VERSION, CSVStore, StorageBackend
 
 
 class CSVStoreTests(unittest.TestCase):
@@ -92,12 +93,23 @@ class CSVStoreTests(unittest.TestCase):
             self.assertEqual(store.list_dividends()[0].portfolio, "General")
             self.assertEqual(store.list_trades()[0].currency, "USD")
             self.assertEqual(store.list_dividends()[0].currency, "USD")
+            metadata = json.loads((data_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["schema_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(metadata["storage_backend"], "csv")
             trades_header = (data_dir / "trades.csv").read_text(encoding="utf-8").splitlines()[0]
             dividends_header = (data_dir / "dividends.csv").read_text(encoding="utf-8").splitlines()[0]
             self.assertIn("portfolio", trades_header)
             self.assertIn("currency", trades_header)
             self.assertIn("portfolio", dividends_header)
             self.assertIn("currency", dividends_header)
+
+    def test_csv_store_satisfies_storage_backend_protocol(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = CSVStore(temp_dir)
+
+            self.assertIsInstance(store, StorageBackend)
+            self.assertTrue(store.price_cache_dir.exists())
+            self.assertTrue(store.result_cache_dir.exists())
 
 
 if __name__ == "__main__":

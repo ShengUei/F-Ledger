@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Protocol
 
+from .cache import NullResultCache, ResultCache
 from .models import DEFAULT_DISPLAY_CURRENCY, Dividend, Trade, normalize_currency, normalize_portfolio
 
 
@@ -43,8 +46,9 @@ class PositionState:
 
 
 class PortfolioAnalytics:
-    def __init__(self, price_provider: PriceProvider) -> None:
+    def __init__(self, price_provider: PriceProvider, result_cache: ResultCache | None = None) -> None:
         self.price_provider = price_provider
+        self.result_cache = result_cache or NullResultCache()
 
     def summary(
         self,
@@ -139,6 +143,12 @@ class PortfolioAnalytics:
         if end < start:
             raise ValueError("end must be on or after start")
         report_currency = normalize_report_currency(display_currency)
+        cache_key = performance_cache_key(trades, dividends, start, end, interval, portfolio, report_currency)
+        cached = self.result_cache.get(cache_key)
+        if cached is not None:
+            cached["cache"] = {"hit": True, "key": cache_key}
+            return cached
+
         points = [
             self._point_from_summary(
                 self.summary(trades, dividends, point, portfolio=portfolio, display_currency=report_currency)
@@ -146,12 +156,15 @@ class PortfolioAnalytics:
             for point in date_points(start, end, interval)
         ]
         annual = self._annual_points(trades, dividends, start, end, portfolio, report_currency)
-        return {
+        result = {
             "portfolio": normalize_portfolio_filter(portfolio) or "All",
             "currency": report_currency,
             "points": points,
             "annual": annual,
         }
+        self.result_cache.set(cache_key, result)
+        result["cache"] = {"hit": False, "key": cache_key}
+        return result
 
     def allocation(
         self,
@@ -427,3 +440,29 @@ def filter_records(
 
 def portfolio_names(trades: list[Trade], dividends: list[Dividend]) -> list[str]:
     return sorted({trade.portfolio for trade in trades} | {dividend.portfolio for dividend in dividends})
+
+
+def performance_cache_key(
+    trades: list[Trade],
+    dividends: list[Dividend],
+    start: date,
+    end: date,
+    interval: str,
+    portfolio: str | None,
+    display_currency: str,
+) -> str:
+    payload = {
+        "kind": "performance",
+        "version": 1,
+        "params": {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "interval": interval,
+            "portfolio": normalize_portfolio_filter(portfolio) or "All",
+            "currency": normalize_report_currency(display_currency),
+        },
+        "trades": [trade.to_json() for trade in sorted(trades, key=lambda item: item.id)],
+        "dividends": [dividend.to_json() for dividend in sorted(dividends, key=lambda item: item.id)],
+    }
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()

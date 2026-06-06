@@ -10,15 +10,17 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .analytics import PortfolioAnalytics, portfolio_names
+from .cache import JSONResultCache, ResultCache
 from .models import DEFAULT_DISPLAY_CURRENCY, Dividend, Trade, parse_date
 from .pricing import YahooFinanceProvider
-from .storage import CSVStore
+from .storage import CSVStore, StorageBackend
 
 
 @dataclass
 class AppContext:
-    store: CSVStore
+    store: StorageBackend
     price_provider: object
+    result_cache: ResultCache | None = None
     web_dir: Path | None = None
 
 
@@ -43,7 +45,7 @@ def _handle_api_request(
     body: bytes,
 ) -> tuple[int, dict]:
     store = context.store
-    analytics = PortfolioAnalytics(context.price_provider)
+    analytics = PortfolioAnalytics(context.price_provider, context.result_cache)
 
     if method == "GET" and path == "/api/records":
         return 200, {
@@ -59,21 +61,27 @@ def _handle_api_request(
     if method == "POST" and path == "/api/trades":
         payload = _read_json(body)
         trade = store.add_trade(Trade.from_dict(payload))
+        _clear_result_cache(context)
         return 201, {"trade": trade.to_json()}
 
     if method == "POST" and path == "/api/dividends":
         payload = _read_json(body)
         dividend = store.add_dividend(Dividend.from_dict(payload))
+        _clear_result_cache(context)
         return 201, {"dividend": dividend.to_json()}
 
     if method == "DELETE" and path.startswith("/api/trades/"):
         record_id = path.rsplit("/", 1)[-1]
         deleted = store.delete_trade(record_id)
+        if deleted:
+            _clear_result_cache(context)
         return (200 if deleted else 404), {"deleted": deleted}
 
     if method == "DELETE" and path.startswith("/api/dividends/"):
         record_id = path.rsplit("/", 1)[-1]
         deleted = store.delete_dividend(record_id)
+        if deleted:
+            _clear_result_cache(context)
         return (200 if deleted else 404), {"deleted": deleted}
 
     if method == "GET" and path == "/api/summary":
@@ -139,6 +147,12 @@ def _query_optional(query: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0] or None
+
+
+def _clear_result_cache(context: AppContext) -> None:
+    context.store.clear_result_cache()
+    if context.result_cache is not None:
+        context.result_cache.clear()
 
 
 def _default_range(trades: list[Trade], dividends: list[Dividend]) -> tuple[date, date]:
@@ -213,7 +227,11 @@ class PortfolioRequestHandler(BaseHTTPRequestHandler):
 
 def create_server(host: str, port: int, data_dir: str | Path) -> ThreadingHTTPServer:
     store = CSVStore(data_dir)
-    context = AppContext(store=store, price_provider=YahooFinanceProvider(store.price_cache_dir))
+    context = AppContext(
+        store=store,
+        price_provider=YahooFinanceProvider(store.price_cache_dir),
+        result_cache=JSONResultCache(store.result_cache_dir),
+    )
 
     class Handler(PortfolioRequestHandler):
         pass
