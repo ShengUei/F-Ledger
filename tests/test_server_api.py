@@ -152,6 +152,51 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual([position["symbol"] for position in payload["selected"]["positions"]], ["STOCKA"])
 
+    def test_period_summary_ignores_trades_before_start_date(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+
+            for trade in [
+                {
+                    "date": "2025-06-01",
+                    "symbol": "OLD",
+                    "side": "BUY",
+                    "quantity": 1,
+                    "price": 999,
+                    "currency": "TWD",
+                    "portfolio": "Active",
+                },
+                {
+                    "date": "2026-01-10",
+                    "symbol": "NEW",
+                    "side": "BUY",
+                    "quantity": 1,
+                    "price": 180,
+                    "currency": "TWD",
+                    "portfolio": "Active",
+                },
+            ]:
+                handle_api_request(
+                    context,
+                    "POST",
+                    "/api/trades",
+                    {},
+                    json.dumps(trade).encode("utf-8"),
+                )
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/period-summary",
+                {"start": ["2026-01-01"], "end": ["2026-01-31"], "portfolio": ["Active"], "currency": ["TWD"]},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual([position["symbol"] for position in payload["positions"]], ["NEW"])
+            self.assertAlmostEqual(payload["market_value"], 180.0, places=2)
+            self.assertAlmostEqual(payload["buy_cost"], 180.0, places=2)
+
     def test_allocation_endpoint_returns_overall_and_portfolios(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(CSVStore(temp_dir), NoopPriceProvider())

@@ -237,7 +237,8 @@ async function refreshAll() {
   setStatus("更新中");
   try {
     await refreshPortfolios();
-    const tasks = [refreshSummary(), refreshPerformance(), refreshAllocation()];
+    await refreshSummary();
+    const tasks = [refreshPerformance(), refreshAllocation()];
     if (state.recordsVisible) {
       tasks.push(refreshRecords());
     }
@@ -284,8 +285,19 @@ async function refreshPerformance() {
 }
 
 async function refreshAllocation() {
-  const asOf = byId("endInput").value;
-  state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}${portfolioQuery()}${currencyQuery()}`);
+  const summary = state.summary;
+  state.allocation = summary
+    ? {
+        as_of: summary.as_of,
+        start: summary.start,
+        end: summary.end,
+        portfolio: summary.portfolio,
+        currency: summary.currency,
+        selected: summary,
+        overall: summary,
+        portfolios: [],
+      }
+    : null;
   renderAllocation();
 }
 

@@ -43,7 +43,7 @@ class PortfolioAnalyticsTests(unittest.TestCase):
 
     def test_performance_series_can_be_grouped_monthly_and_yearly(self):
         trades = [
-            Trade("", date(2023, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
+            Trade("", date(2023, 12, 2), "AAPL", "BUY", 10, 10, 0, ""),
             Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 20, 0, ""),
         ]
         dividends = [
@@ -121,19 +121,19 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertEqual([position["symbol"] for position in active_result["selected"]["positions"]], ["GOOG", "MSFT"])
         self.assertAlmostEqual(active_result["selected"]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
 
-    def test_period_summary_reports_values_for_selected_date_range(self):
+    def test_period_summary_uses_only_records_in_selected_date_range(self):
         trades = [
             Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
-            Trade("", date(2024, 3, 1), "AAPL", "BUY", 5, 20, 0, ""),
-            Trade("", date(2024, 7, 1), "AAPL", "SELL", 4, 30, 0, ""),
+            Trade("", date(2024, 6, 15), "AAPL", "BUY", 5, 20, 0, ""),
+            Trade("", date(2024, 7, 1), "AAPL", "SELL", 2, 30, 0, ""),
             Trade("", date(2024, 10, 1), "MSFT", "BUY", 1, 100, 0, ""),
         ]
         dividends = [
+            Dividend("", date(2024, 5, 1), "AAPL", 10, 0, ""),
             Dividend("", date(2024, 8, 1), "AAPL", 20, 0, ""),
         ]
         prices = {
             "AAPL": {
-                date(2024, 5, 31): 15,
                 date(2024, 9, 30): 25,
             },
             "MSFT": {date(2024, 10, 31): 120},
@@ -144,14 +144,41 @@ class PortfolioAnalyticsTests(unittest.TestCase):
 
         self.assertEqual(result["start"], "2024-06-01")
         self.assertEqual(result["end"], "2024-09-30")
-        self.assertAlmostEqual(result["market_value"], 275.0, places=2)
-        self.assertAlmostEqual(result["market_value_change"], 50.0, places=2)
-        self.assertAlmostEqual(result["sell_proceeds"], 120.0, places=2)
-        self.assertAlmostEqual(result["realized_gain"], 66.67, places=2)
-        self.assertAlmostEqual(result["sell_gain"], 66.67, places=2)
+        self.assertAlmostEqual(result["market_value"], 75.0, places=2)
+        self.assertAlmostEqual(result["market_value_change"], 75.0, places=2)
+        self.assertAlmostEqual(result["buy_cost"], 100.0, places=2)
+        self.assertAlmostEqual(result["sell_proceeds"], 60.0, places=2)
+        self.assertAlmostEqual(result["realized_gain"], 20.0, places=2)
+        self.assertAlmostEqual(result["sell_gain"], 20.0, places=2)
         self.assertAlmostEqual(result["dividends"], 20.0, places=2)
-        self.assertAlmostEqual(result["total_gain"], 190.0, places=2)
+        self.assertAlmostEqual(result["total_gain"], 55.0, places=2)
         self.assertEqual([position["symbol"] for position in result["positions"]], ["AAPL"])
+        self.assertAlmostEqual(result["positions"][0]["quantity"], 3.0, places=2)
+
+    def test_performance_uses_only_records_in_selected_date_range(self):
+        trades = [
+            Trade("", date(2025, 6, 1), "OLD", "BUY", 2, 100, 0, ""),
+            Trade("", date(2026, 1, 10), "NEW", "BUY", 1, 50, 0, ""),
+        ]
+        prices = {
+            "OLD": {date(2026, 1, 31): 200},
+            "NEW": {date(2026, 1, 31): 60},
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.performance(
+            trades,
+            [],
+            start=date(2026, 1, 1),
+            end=date(2026, 1, 31),
+            interval="monthly",
+        )
+
+        self.assertEqual([point["date"] for point in result["points"]], ["2026-01-31"])
+        self.assertAlmostEqual(result["points"][0]["market_value"], 60.0, places=2)
+        self.assertAlmostEqual(result["points"][0]["total_gain"], 10.0, places=2)
+        self.assertEqual([item["year"] for item in result["annual"]], [2026])
+        self.assertAlmostEqual(result["annual"][0]["ending_market_value"], 60.0, places=2)
 
     def test_summary_converts_us_and_taiwan_holdings_to_display_currency(self):
         trades = [

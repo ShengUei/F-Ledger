@@ -144,37 +144,8 @@ class PortfolioAnalytics:
         report_currency = normalize_report_currency(display_currency)
         portfolio_filter = normalize_portfolio_filter(portfolio)
         filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
-        ending = self.summary(filtered_trades, filtered_dividends, end, display_currency=report_currency)
-        baseline_date = start - timedelta(days=1)
-        baseline = (
-            self.summary(filtered_trades, filtered_dividends, baseline_date, display_currency=report_currency)
-            if baseline_date >= date(1900, 1, 1)
-            else None
-        )
-        baseline_total_gain = baseline["total_gain"] if baseline else 0.0
-        baseline_market_value = baseline["market_value"] if baseline else 0.0
-        baseline_realized_gain = baseline["realized_gain"] if baseline else 0.0
-        baseline_cash_flow = baseline["cash_flow"] if baseline else 0.0
-        warnings: list[str] = []
-        period_trades = [trade for trade in filtered_trades if start <= trade.date <= end]
-        period_dividends = [dividend for dividend in filtered_dividends if start <= dividend.date <= end]
-        buy_cost = sum(
-            self._convert(trade.quantity * trade.price + trade.fees, trade.currency, report_currency, trade.date, warnings)
-            for trade in period_trades
-            if trade.side == "BUY"
-        )
-        sell_proceeds = sum(
-            self._convert(trade.quantity * trade.price - trade.fees, trade.currency, report_currency, trade.date, warnings)
-            for trade in period_trades
-            if trade.side == "SELL"
-        )
-        dividends_total = sum(
-            self._convert(dividend.net_amount, dividend.currency, report_currency, dividend.date, warnings)
-            for dividend in period_dividends
-        )
-        total_gain = ending["total_gain"] - baseline_total_gain
-        realized_gain = ending["realized_gain"] - baseline_realized_gain
-        return_base = buy_cost or baseline_market_value or ending["buy_cost"]
+        period_trades, period_dividends = filter_records_by_date(filtered_trades, filtered_dividends, start, end)
+        ending = self.summary(period_trades, period_dividends, end, display_currency=report_currency)
 
         return {
             "start": start.isoformat(),
@@ -183,17 +154,17 @@ class PortfolioAnalytics:
             "portfolio": portfolio_filter or "All",
             "currency": report_currency,
             "market_value": ending["market_value"],
-            "market_value_change": round_money(ending["market_value"] - baseline_market_value),
-            "buy_cost": round_money(buy_cost),
-            "sell_proceeds": round_money(sell_proceeds),
-            "cash_flow": round_money(ending["cash_flow"] - baseline_cash_flow),
-            "realized_gain": round_money(realized_gain),
-            "sell_gain": round_money(realized_gain),
-            "dividends": round_money(dividends_total),
-            "total_gain": round_money(total_gain),
-            "return_pct": round_number(total_gain / return_base if return_base else 0.0),
+            "market_value_change": ending["market_value"],
+            "buy_cost": ending["buy_cost"],
+            "sell_proceeds": ending["sell_proceeds"],
+            "cash_flow": ending["cash_flow"],
+            "realized_gain": ending["realized_gain"],
+            "sell_gain": ending["realized_gain"],
+            "dividends": ending["dividends"],
+            "total_gain": ending["total_gain"],
+            "return_pct": ending["return_pct"],
             "positions": ending["positions"],
-            "warnings": ending["warnings"] + warnings,
+            "warnings": ending["warnings"],
         }
 
     def performance(
@@ -215,15 +186,18 @@ class PortfolioAnalytics:
             cached["cache"] = {"hit": True, "key": cache_key}
             return cached
 
+        portfolio_filter = normalize_portfolio_filter(portfolio)
+        filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
+        period_trades, period_dividends = filter_records_by_date(filtered_trades, filtered_dividends, start, end)
         points = [
             self._point_from_summary(
-                self.summary(trades, dividends, point, portfolio=portfolio, display_currency=report_currency)
+                self.summary(period_trades, period_dividends, point, display_currency=report_currency)
             )
             for point in date_points(start, end, interval)
         ]
-        annual = self._annual_points(trades, dividends, start, end, portfolio, report_currency)
+        annual = self._annual_points(period_trades, period_dividends, start, end, None, report_currency)
         result = {
-            "portfolio": normalize_portfolio_filter(portfolio) or "All",
+            "portfolio": portfolio_filter or "All",
             "currency": report_currency,
             "points": points,
             "annual": annual,
@@ -518,6 +492,18 @@ def filter_records(
     )
 
 
+def filter_records_by_date(
+    trades: list[Trade],
+    dividends: list[Dividend],
+    start: date,
+    end: date,
+) -> tuple[list[Trade], list[Dividend]]:
+    return (
+        [trade for trade in trades if start <= trade.date <= end],
+        [dividend for dividend in dividends if start <= dividend.date <= end],
+    )
+
+
 def portfolio_names(trades: list[Trade], dividends: list[Dividend]) -> list[str]:
     return sorted({trade.portfolio for trade in trades} | {dividend.portfolio for dividend in dividends})
 
@@ -533,7 +519,7 @@ def performance_cache_key(
 ) -> str:
     payload = {
         "kind": "performance",
-        "version": 1,
+        "version": 2,
         "params": {
             "start": start.isoformat(),
             "end": end.isoformat(),
