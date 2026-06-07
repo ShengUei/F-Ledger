@@ -849,8 +849,8 @@ function recordQuery() {
   params.set("page_size", byId("recordPageSize").value || "25");
   const portfolio = byId("recordPortfolioFilter").value;
   const symbol = byId("recordSymbolFilter").value.trim();
-  const start = byId("recordStartFilter").value;
-  const end = byId("recordEndFilter").value;
+  const start = byId("recordStartFilter").value || byId("startInput").value;
+  const end = byId("recordEndFilter").value || byId("endInput").value;
   if (portfolio && portfolio !== "All") {
     params.set("portfolio", portfolio);
   }

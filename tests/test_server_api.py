@@ -97,6 +97,61 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(payload["portfolio"], "Active")
             self.assertEqual(payload["positions"][0]["symbol"], "2330.TW")
 
+    def test_period_summary_and_allocation_ignore_trades_after_end_date(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+
+            for trade in [
+                {
+                    "date": "2026-01-01",
+                    "symbol": "STOCKA",
+                    "side": "BUY",
+                    "quantity": 1,
+                    "price": 230,
+                    "currency": "TWD",
+                    "portfolio": "Active",
+                },
+                {
+                    "date": "2026-02-01",
+                    "symbol": "STOCKB",
+                    "side": "BUY",
+                    "quantity": 1,
+                    "price": 180,
+                    "currency": "TWD",
+                    "portfolio": "Active",
+                },
+            ]:
+                handle_api_request(
+                    context,
+                    "POST",
+                    "/api/trades",
+                    {},
+                    json.dumps(trade).encode("utf-8"),
+                )
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/period-summary",
+                {"start": ["2026-01-01"], "end": ["2026-01-31"], "portfolio": ["Active"], "currency": ["TWD"]},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual([position["symbol"] for position in payload["positions"]], ["STOCKA"])
+            self.assertAlmostEqual(payload["market_value"], 230.0, places=2)
+
+            status, payload = handle_api_request(
+                context,
+                "GET",
+                "/api/allocation",
+                {"as_of": ["2026-01-31"], "portfolio": ["Active"], "currency": ["TWD"]},
+                b"",
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual([position["symbol"] for position in payload["selected"]["positions"]], ["STOCKA"])
+
     def test_allocation_endpoint_returns_overall_and_portfolios(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
