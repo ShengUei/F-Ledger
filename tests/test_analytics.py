@@ -126,6 +126,7 @@ class PortfolioAnalyticsTests(unittest.TestCase):
             Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
             Trade("", date(2024, 3, 1), "AAPL", "BUY", 5, 20, 0, ""),
             Trade("", date(2024, 7, 1), "AAPL", "SELL", 4, 30, 0, ""),
+            Trade("", date(2024, 10, 1), "MSFT", "BUY", 1, 100, 0, ""),
         ]
         dividends = [
             Dividend("", date(2024, 8, 1), "AAPL", 20, 0, ""),
@@ -134,7 +135,8 @@ class PortfolioAnalyticsTests(unittest.TestCase):
             "AAPL": {
                 date(2024, 5, 31): 15,
                 date(2024, 9, 30): 25,
-            }
+            },
+            "MSFT": {date(2024, 10, 31): 120},
         }
 
         analytics = PortfolioAnalytics(FakePriceProvider(prices))
@@ -149,6 +151,7 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertAlmostEqual(result["sell_gain"], 66.67, places=2)
         self.assertAlmostEqual(result["dividends"], 20.0, places=2)
         self.assertAlmostEqual(result["total_gain"], 190.0, places=2)
+        self.assertEqual([position["symbol"] for position in result["positions"]], ["AAPL"])
 
     def test_summary_converts_us_and_taiwan_holdings_to_display_currency(self):
         trades = [

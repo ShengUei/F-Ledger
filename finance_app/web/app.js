@@ -283,7 +283,7 @@ async function refreshPerformance() {
 }
 
 async function refreshAllocation() {
-  const asOf = byId("asOfInput").value;
+  const asOf = byId("endInput").value;
   state.allocation = await apiGet(`/api/allocation?as_of=${encodeURIComponent(asOf)}${portfolioQuery()}${currencyQuery()}`);
   renderAllocation();
 }
@@ -876,6 +876,32 @@ function reportCurrency() {
 function selectedPortfolioForForm() {
   const portfolio = byId("portfolioFilter").value;
   return portfolio && portfolio !== "All" ? portfolio : "General";
+}
+
+function annualXValue(row) {
+  return `${row.year}-12-31`;
+}
+
+function formatXAxisLabel(value, mode) {
+  const text = String(value || "");
+  if (mode === "short_year") {
+    return text.slice(2, 4);
+  }
+  if (mode === "year") {
+    return text.slice(0, 4);
+  }
+  if (mode === "month") {
+    return text.slice(0, 7);
+  }
+  if (mode === "auto") {
+    if (state.interval === "yearly") {
+      return text.slice(0, 4);
+    }
+    if (state.interval === "monthly") {
+      return text.slice(0, 7);
+    }
+  }
+  return text;
 }
 
 function inferCurrency(symbol) {
