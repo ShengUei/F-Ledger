@@ -7,7 +7,6 @@ const state = {
   summary: null,
   performance: { points: [], annual: [] },
   allocation: null,
-  resizeTimer: null,
   charts: { performance: null, annual: null, allocation: null },
   recordsVisible: false,
   recordPage: 1,
@@ -47,11 +46,14 @@ function replaceSvgWithCanvas(id) {
   if (!element || element.tagName.toLowerCase() === "canvas") {
     return;
   }
+  const frame = document.createElement("div");
+  frame.className = "chart-canvas-frame";
   const canvas = document.createElement("canvas");
   canvas.id = id;
   canvas.setAttribute("role", element.getAttribute("role") || "img");
   canvas.setAttribute("aria-label", element.getAttribute("aria-label") || "");
-  element.replaceWith(canvas);
+  frame.appendChild(canvas);
+  element.replaceWith(frame);
 }
 
 function setupDividendImportPanel() {
@@ -204,7 +206,6 @@ function bindEvents() {
     select.addEventListener("change", () => syncNewPortfolioField(select.form));
   });
 
-  window.addEventListener("resize", scheduleChartRender);
   byId("tradeForm").addEventListener("submit", submitTrade);
   byId("dividendForm").addEventListener("submit", submitDividend);
   byId("downloadTradeTemplateButton").addEventListener("click", downloadTradeTemplate);
@@ -1080,14 +1081,6 @@ function drawCanvasMessage(canvas, text) {
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.fillText(text, canvas.width / 2, canvas.height / 2);
-}
-
-function scheduleChartRender() {
-  clearTimeout(state.resizeTimer);
-  state.resizeTimer = setTimeout(() => {
-    renderPerformance();
-    renderAllocation();
-  }, 120);
 }
 
 function byId(id) {
