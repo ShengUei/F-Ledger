@@ -5,13 +5,13 @@ from datetime import date
 from pathlib import Path
 
 from finance_app.models import Dividend, Trade
-from finance_app.storage import CURRENT_SCHEMA_VERSION, CSVStore, StorageBackend
+from finance_app.storage import CURRENT_SCHEMA_VERSION, SQLITE_FILE, SQLiteStore, StorageBackend
 
 
-class CSVStoreTests(unittest.TestCase):
+class SQLiteStoreTests(unittest.TestCase):
     def test_trade_and_dividend_round_trip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = CSVStore(temp_dir)
+            store = SQLiteStore(temp_dir)
 
             trade = store.add_trade(
                 Trade(
@@ -40,7 +40,7 @@ class CSVStoreTests(unittest.TestCase):
                 )
             )
 
-            reloaded = CSVStore(temp_dir)
+            reloaded = SQLiteStore(temp_dir)
             self.assertEqual(len(reloaded.list_trades()), 1)
             self.assertEqual(len(reloaded.list_dividends()), 1)
             self.assertEqual(reloaded.list_trades()[0].id, trade.id)
@@ -54,7 +54,7 @@ class CSVStoreTests(unittest.TestCase):
 
     def test_delete_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = CSVStore(temp_dir)
+            store = SQLiteStore(temp_dir)
             trade = store.add_trade(
                 Trade(
                     id="",
@@ -72,7 +72,38 @@ class CSVStoreTests(unittest.TestCase):
             self.assertFalse(store.delete_trade(trade.id))
             self.assertEqual(store.list_trades(), [])
 
-    def test_existing_csv_without_portfolio_or_currency_is_migrated(self):
+    def test_update_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStore(temp_dir)
+            trade = store.add_trade(
+                Trade("", date(2024, 1, 2), "MSFT", "BUY", 2, 200, 0, "", "Active", "USD")
+            )
+            dividend = store.add_dividend(
+                Dividend("", date(2024, 2, 1), "MSFT", 10, 1, "", "Active", "USD")
+            )
+
+            updated_trade = store.update_trade(
+                trade.id,
+                Trade("", date(2024, 1, 3), "AAPL", "SELL", 1, 210, 2, "fixed", "DCA", "USD"),
+            )
+            updated_dividend = store.update_dividend(
+                dividend.id,
+                Dividend("", date(2024, 2, 2), "AAPL", 12, 2, "fixed dividend", "DCA", "USD"),
+            )
+
+            self.assertIsNotNone(updated_trade)
+            self.assertIsNotNone(updated_dividend)
+            self.assertEqual(store.list_trades()[0].id, trade.id)
+            self.assertEqual(store.list_trades()[0].symbol, "AAPL")
+            self.assertEqual(store.list_trades()[0].side, "SELL")
+            self.assertEqual(store.list_trades()[0].portfolio, "DCA")
+            self.assertEqual(store.list_dividends()[0].id, dividend.id)
+            self.assertEqual(store.list_dividends()[0].gross_amount, 12)
+            self.assertEqual(store.list_dividends()[0].notes, "fixed dividend")
+            self.assertIsNone(store.update_trade("missing", store.list_trades()[0]))
+            self.assertIsNone(store.update_dividend("missing", store.list_dividends()[0]))
+
+    def test_existing_csv_without_portfolio_or_currency_is_imported_to_sqlite(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
             data_dir.mkdir(exist_ok=True)
@@ -87,7 +118,7 @@ class CSVStoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            store = CSVStore(temp_dir)
+            store = SQLiteStore(temp_dir)
 
             self.assertEqual(store.list_trades()[0].portfolio, "General")
             self.assertEqual(store.list_dividends()[0].portfolio, "General")
@@ -95,17 +126,13 @@ class CSVStoreTests(unittest.TestCase):
             self.assertEqual(store.list_dividends()[0].currency, "USD")
             metadata = json.loads((data_dir / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["schema_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(metadata["storage_backend"], "csv")
-            trades_header = (data_dir / "trades.csv").read_text(encoding="utf-8").splitlines()[0]
-            dividends_header = (data_dir / "dividends.csv").read_text(encoding="utf-8").splitlines()[0]
-            self.assertIn("portfolio", trades_header)
-            self.assertIn("currency", trades_header)
-            self.assertIn("portfolio", dividends_header)
-            self.assertIn("currency", dividends_header)
+            self.assertEqual(metadata["storage_backend"], "sqlite")
+            self.assertEqual(metadata["files"]["database"], SQLITE_FILE)
+            self.assertTrue((data_dir / SQLITE_FILE).exists())
 
-    def test_csv_store_satisfies_storage_backend_protocol(self):
+    def test_sqlite_store_satisfies_storage_backend_protocol(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = CSVStore(temp_dir)
+            store = SQLiteStore(temp_dir)
 
             self.assertIsInstance(store, StorageBackend)
             self.assertTrue(store.price_cache_dir.exists())

@@ -13,7 +13,7 @@ from .analytics import PortfolioAnalytics, portfolio_names
 from .cache import JSONResultCache, ResultCache
 from .models import DEFAULT_DISPLAY_CURRENCY, Dividend, Trade, parse_date
 from .pricing import YahooFinanceProvider
-from .storage import CSVStore, StorageBackend
+from .storage import SQLiteStore, StorageBackend
 
 
 DIVIDEND_IMPORT_TEMPLATE = (
@@ -27,8 +27,8 @@ DEFAULT_MARKET_SYMBOLS = ("^TWII", "SPY")
 
 TRADE_IMPORT_TEMPLATE = (
     "date,symbol,side,quantity,price,fees,currency,portfolio,notes\n"
-    "2024-01-02,GOOG,BUY,10,100,1,USD,美股,example buy\n"
-    "2024-01-03,2330.TW,BUY,5,500,20,TWD,臺股,example buy\n"
+    "2024-01-02,GOOG,BUY,10,100,1,USD,Active,example buy\n"
+    "2024-01-03,2330.TW,BUY,5,500,20,TWD,DCA,example buy\n"
 )
 
 
@@ -134,6 +134,24 @@ def _handle_api_request(
         saved = [store.add_dividend(dividend) for dividend in dividends]
         _clear_result_cache(context)
         return 201, {"imported_count": len(saved), "dividends": [dividend.to_json() for dividend in saved]}
+
+    if method == "PUT" and path.startswith("/api/trades/"):
+        record_id = path.rsplit("/", 1)[-1]
+        payload = _read_json(body)
+        trade = store.update_trade(record_id, Trade.from_dict({**payload, "id": record_id}))
+        if trade is None:
+            return 404, {"updated": False}
+        _clear_result_cache(context)
+        return 200, {"updated": True, "trade": trade.to_json()}
+
+    if method == "PUT" and path.startswith("/api/dividends/"):
+        record_id = path.rsplit("/", 1)[-1]
+        payload = _read_json(body)
+        dividend = store.update_dividend(record_id, Dividend.from_dict({**payload, "id": record_id}))
+        if dividend is None:
+            return 404, {"updated": False}
+        _clear_result_cache(context)
+        return 200, {"updated": True, "dividend": dividend.to_json()}
 
     if method == "DELETE" and path.startswith("/api/trades/"):
         record_id = path.rsplit("/", 1)[-1]
@@ -289,7 +307,12 @@ def _trade_record(trade: Trade) -> dict:
         "portfolio": trade.portfolio,
         "currency": trade.currency,
         "type": trade.side,
+        "side": trade.side,
+        "quantity": trade.quantity,
+        "price": trade.price,
+        "fees": trade.fees,
         "amount": amount,
+        "notes": trade.notes,
     }
 
 
@@ -302,7 +325,11 @@ def _dividend_record(dividend: Dividend) -> dict:
         "portfolio": dividend.portfolio,
         "currency": dividend.currency,
         "type": "DIVIDEND",
+        "gross_amount": dividend.gross_amount,
+        "tax": dividend.tax,
+        "net_amount": dividend.net_amount,
         "amount": dividend.net_amount,
+        "notes": dividend.notes,
     }
 
 
@@ -363,6 +390,9 @@ class PortfolioRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._dispatch()
 
+    def do_PUT(self) -> None:
+        self._dispatch()
+
     def do_DELETE(self) -> None:
         self._dispatch()
 
@@ -417,7 +447,7 @@ class PortfolioRequestHandler(BaseHTTPRequestHandler):
 
 
 def create_server(host: str, port: int, data_dir: str | Path) -> ThreadingHTTPServer:
-    store = CSVStore(data_dir)
+    store = SQLiteStore(data_dir)
     context = AppContext(
         store=store,
         price_provider=YahooFinanceProvider(store.price_cache_dir),

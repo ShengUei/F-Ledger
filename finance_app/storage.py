@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import csv
 import json
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
+from collections.abc import Iterator
 from typing import Iterable, Protocol, runtime_checkable
 
 from .models import DEFAULT_PORTFOLIO, Dividend, Trade, normalize_currency
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
+SQLITE_FILE = "portfolio.sqlite3"
 TRADE_FIELDS = ["id", "date", "symbol", "side", "quantity", "price", "fees", "currency", "portfolio", "notes"]
 DIVIDEND_FIELDS = ["id", "date", "symbol", "gross_amount", "tax", "currency", "portfolio", "notes"]
 
@@ -29,6 +33,12 @@ class StorageBackend(Protocol):
         ...
 
     def add_dividend(self, dividend: Dividend) -> Dividend:
+        ...
+
+    def update_trade(self, record_id: str, trade: Trade) -> Trade | None:
+        ...
+
+    def update_dividend(self, record_id: str, dividend: Dividend) -> Dividend | None:
         ...
 
     def delete_trade(self, record_id: str) -> bool:
@@ -106,11 +116,56 @@ class CSVStore:
             self.clear_result_cache()
         return saved
 
+    def update_trade(self, record_id: str, trade: Trade) -> Trade | None:
+        saved = Trade(
+            id=record_id,
+            date=trade.date,
+            symbol=trade.symbol,
+            side=trade.side,
+            quantity=trade.quantity,
+            price=trade.price,
+            fees=trade.fees,
+            notes=trade.notes,
+            portfolio=trade.portfolio,
+            currency=trade.currency,
+        )
+        return self._update_by_id(self.trades_path, TRADE_FIELDS, record_id, saved.to_row(), saved)
+
+    def update_dividend(self, record_id: str, dividend: Dividend) -> Dividend | None:
+        saved = Dividend(
+            id=record_id,
+            date=dividend.date,
+            symbol=dividend.symbol,
+            gross_amount=dividend.gross_amount,
+            tax=dividend.tax,
+            notes=dividend.notes,
+            portfolio=dividend.portfolio,
+            currency=dividend.currency,
+        )
+        return self._update_by_id(self.dividends_path, DIVIDEND_FIELDS, record_id, saved.to_row(), saved)
+
     def delete_trade(self, record_id: str) -> bool:
         return self._delete_by_id(self.trades_path, TRADE_FIELDS, record_id)
 
     def delete_dividend(self, record_id: str) -> bool:
         return self._delete_by_id(self.dividends_path, DIVIDEND_FIELDS, record_id)
+
+    def _update_by_id(self, path: Path, fields: list[str], record_id: str, updated_row: dict[str, str], saved: Trade | Dividend):
+        with self._lock:
+            rows = self._read_rows(path)
+            found = False
+            updated = []
+            for row in rows:
+                if row.get("id") == record_id:
+                    updated.append(updated_row)
+                    found = True
+                else:
+                    updated.append(row)
+            if not found:
+                return None
+            self._write_rows(path, fields, updated)
+            self.clear_result_cache()
+            return saved
 
     def _delete_by_id(self, path: Path, fields: list[str], record_id: str) -> bool:
         with self._lock:
@@ -165,6 +220,306 @@ class CSVStore:
             "files": {
                 "trades": self.trades_path.name,
                 "dividends": self.dividends_path.name,
+                "price_cache": self.price_cache_dir.name,
+                "result_cache": self.result_cache_dir.name,
+            },
+        }
+        temp_path = self.metadata_path.with_suffix(self.metadata_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        temp_path.replace(self.metadata_path)
+
+
+class SQLiteStore:
+    def __init__(self, data_dir: str | Path = "data") -> None:
+        self.data_dir = Path(data_dir)
+        self.db_path = self.data_dir / SQLITE_FILE
+        self.metadata_path = self.data_dir / "metadata.json"
+        self.trades_path = self.data_dir / "trades.csv"
+        self.dividends_path = self.data_dir / "dividends.csv"
+        self.price_cache_dir = self.data_dir / "price_cache"
+        self.result_cache_dir = self.data_dir / "result_cache"
+        self._lock = RLock()
+        self._ensure_database()
+
+    def _ensure_database(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.price_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.result_cache_dir.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS trades (
+                    id TEXT PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    fees REAL NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL,
+                    portfolio TEXT NOT NULL,
+                    notes TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(date);
+                CREATE INDEX IF NOT EXISTS idx_trades_portfolio ON trades(portfolio);
+                CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+
+                CREATE TABLE IF NOT EXISTS dividends (
+                    id TEXT PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    gross_amount REAL NOT NULL,
+                    tax REAL NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL,
+                    portfolio TEXT NOT NULL,
+                    notes TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_dividends_date ON dividends(date);
+                CREATE INDEX IF NOT EXISTS idx_dividends_portfolio ON dividends(portfolio);
+                CREATE INDEX IF NOT EXISTS idx_dividends_symbol ON dividends(symbol);
+                """
+            )
+            connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+            self._write_metadata_rows(connection)
+        self._migrate_legacy_csv_if_empty()
+        self._write_metadata_file()
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def list_trades(self) -> list[Trade]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, date, symbol, side, quantity, price, fees, currency, portfolio, notes
+                FROM trades
+                ORDER BY date, portfolio, symbol, id
+                """
+            ).fetchall()
+        return [Trade.from_dict(dict(row)) for row in rows]
+
+    def list_dividends(self) -> list[Dividend]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, date, symbol, gross_amount, tax, currency, portfolio, notes
+                FROM dividends
+                ORDER BY date, portfolio, symbol, id
+                """
+            ).fetchall()
+        return [Dividend.from_dict(dict(row)) for row in rows]
+
+    def add_trade(self, trade: Trade) -> Trade:
+        saved = trade.with_id()
+        with self._lock, self._connect() as connection:
+            self._insert_trade(connection, saved)
+            self.clear_result_cache()
+        return saved
+
+    def add_dividend(self, dividend: Dividend) -> Dividend:
+        saved = dividend.with_id()
+        with self._lock, self._connect() as connection:
+            self._insert_dividend(connection, saved)
+            self.clear_result_cache()
+        return saved
+
+    def update_trade(self, record_id: str, trade: Trade) -> Trade | None:
+        saved = Trade(
+            id=record_id,
+            date=trade.date,
+            symbol=trade.symbol,
+            side=trade.side,
+            quantity=trade.quantity,
+            price=trade.price,
+            fees=trade.fees,
+            notes=trade.notes,
+            portfolio=trade.portfolio,
+            currency=trade.currency,
+        )
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE trades
+                SET date = ?, symbol = ?, side = ?, quantity = ?, price = ?, fees = ?,
+                    currency = ?, portfolio = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    saved.date.isoformat(),
+                    saved.symbol,
+                    saved.side,
+                    saved.quantity,
+                    saved.price,
+                    saved.fees,
+                    saved.currency,
+                    saved.portfolio,
+                    saved.notes,
+                    record_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+            self.clear_result_cache()
+        return saved
+
+    def update_dividend(self, record_id: str, dividend: Dividend) -> Dividend | None:
+        saved = Dividend(
+            id=record_id,
+            date=dividend.date,
+            symbol=dividend.symbol,
+            gross_amount=dividend.gross_amount,
+            tax=dividend.tax,
+            notes=dividend.notes,
+            portfolio=dividend.portfolio,
+            currency=dividend.currency,
+        )
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE dividends
+                SET date = ?, symbol = ?, gross_amount = ?, tax = ?, currency = ?,
+                    portfolio = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    saved.date.isoformat(),
+                    saved.symbol,
+                    saved.gross_amount,
+                    saved.tax,
+                    saved.currency,
+                    saved.portfolio,
+                    saved.notes,
+                    record_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+            self.clear_result_cache()
+        return saved
+
+    def delete_trade(self, record_id: str) -> bool:
+        return self._delete_by_id("trades", record_id)
+
+    def delete_dividend(self, record_id: str) -> bool:
+        return self._delete_by_id("dividends", record_id)
+
+    def _delete_by_id(self, table: str, record_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(f"DELETE FROM {table} WHERE id = ?", (record_id,))
+            if cursor.rowcount == 0:
+                return False
+            self.clear_result_cache()
+            return True
+
+    def clear_result_cache(self) -> None:
+        if not self.result_cache_dir.exists():
+            return
+        for path in self.result_cache_dir.glob("*.json"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def _migrate_legacy_csv_if_empty(self) -> None:
+        with self._lock, self._connect() as connection:
+            trade_count = connection.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+            dividend_count = connection.execute("SELECT COUNT(*) FROM dividends").fetchone()[0]
+            if trade_count or dividend_count:
+                return
+            trades = [Trade.from_dict(row) for row in self._legacy_csv_rows(self.trades_path, TRADE_FIELDS)]
+            dividends = [Dividend.from_dict(row) for row in self._legacy_csv_rows(self.dividends_path, DIVIDEND_FIELDS)]
+            for trade in trades:
+                self._insert_trade(connection, trade.with_id())
+            for dividend in dividends:
+                self._insert_dividend(connection, dividend.with_id())
+
+    @staticmethod
+    def _legacy_csv_rows(path: Path, fields: list[str]) -> list[dict[str, str]]:
+        if not path.exists() or path.stat().st_size == 0:
+            return []
+        with path.open("r", newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            return [CSVStore._normalize_row(dict(row), fields) for row in reader]
+
+    @staticmethod
+    def _insert_trade(connection: sqlite3.Connection, trade: Trade) -> None:
+        connection.execute(
+            """
+            INSERT INTO trades (id, date, symbol, side, quantity, price, fees, currency, portfolio, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade.id,
+                trade.date.isoformat(),
+                trade.symbol,
+                trade.side,
+                trade.quantity,
+                trade.price,
+                trade.fees,
+                trade.currency,
+                trade.portfolio,
+                trade.notes,
+            ),
+        )
+
+    @staticmethod
+    def _insert_dividend(connection: sqlite3.Connection, dividend: Dividend) -> None:
+        connection.execute(
+            """
+            INSERT INTO dividends (id, date, symbol, gross_amount, tax, currency, portfolio, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                dividend.id,
+                dividend.date.isoformat(),
+                dividend.symbol,
+                dividend.gross_amount,
+                dividend.tax,
+                dividend.currency,
+                dividend.portfolio,
+                dividend.notes,
+            ),
+        )
+
+    def _write_metadata_rows(self, connection: sqlite3.Connection) -> None:
+        rows = {
+            "schema_version": str(CURRENT_SCHEMA_VERSION),
+            "storage_backend": "sqlite",
+        }
+        for key, value in rows.items():
+            connection.execute(
+                """
+                INSERT INTO metadata (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+
+    def _write_metadata_file(self) -> None:
+        payload = {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "storage_backend": "sqlite",
+            "files": {
+                "database": self.db_path.name,
+                "legacy_trades": self.trades_path.name,
+                "legacy_dividends": self.dividends_path.name,
                 "price_cache": self.price_cache_dir.name,
                 "result_cache": self.result_cache_dir.name,
             },

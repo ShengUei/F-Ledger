@@ -4,7 +4,7 @@ import unittest
 from datetime import date
 
 from finance_app.server import AppContext, handle_api_request
-from finance_app.storage import CSVStore
+from finance_app.storage import SQLiteStore
 
 
 class NoopPriceProvider:
@@ -27,7 +27,7 @@ class ServerAPITests(unittest.TestCase):
     def test_default_dates_use_latest_market_day_and_current_year_start(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(
-                CSVStore(temp_dir),
+                SQLiteStore(temp_dir),
                 FixedPriceProvider({"^TWII": {date(2026, 6, 5): 100.0}}),
                 today=date(2026, 6, 7),
             )
@@ -42,7 +42,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_create_trade_and_get_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             status, payload = handle_api_request(
                 context,
@@ -99,7 +99,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_period_summary_and_allocation_ignore_trades_after_end_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             for trade in [
                 {
@@ -154,7 +154,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_period_summary_ignores_trades_before_start_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             for trade in [
                 {
@@ -199,7 +199,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_allocation_endpoint_returns_overall_and_portfolios(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             for portfolio, quantity in [("Active", 10), ("DCA", 5)]:
                 handle_api_request(
@@ -251,7 +251,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_trade_import_template_and_batch_import(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             status, payload = handle_api_request(
                 context,
@@ -307,7 +307,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_dividend_import_template_and_batch_import(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             status, payload = handle_api_request(
                 context,
@@ -359,7 +359,7 @@ class ServerAPITests(unittest.TestCase):
 
     def test_records_endpoint_filters_and_paginates(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
             for portfolio, symbol in [("Active", "GOOG"), ("DCA", "MSFT")]:
                 handle_api_request(
                     context,
@@ -410,10 +410,127 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(payload["total_pages"], 1)
             self.assertEqual(payload["records"][0]["kind"], "trade")
             self.assertEqual(payload["records"][0]["symbol"], "GOOG")
+            self.assertEqual(payload["records"][0]["quantity"], 1)
+            self.assertEqual(payload["records"][0]["price"], 100)
+
+    def test_update_trade_and_dividend_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
+
+            status, payload = handle_api_request(
+                context,
+                "POST",
+                "/api/trades",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-01-02",
+                        "symbol": "GOOG",
+                        "side": "BUY",
+                        "quantity": 1,
+                        "price": 100,
+                        "fees": 0,
+                        "portfolio": "Active",
+                        "currency": "USD",
+                        "notes": "bad entry",
+                    }
+                ).encode("utf-8"),
+            )
+            trade_id = payload["trade"]["id"]
+
+            status, payload = handle_api_request(
+                context,
+                "PUT",
+                f"/api/trades/{trade_id}",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-01-03",
+                        "symbol": "MSFT",
+                        "side": "SELL",
+                        "quantity": 2,
+                        "price": 120,
+                        "fees": 1,
+                        "portfolio": "DCA",
+                        "currency": "USD",
+                        "notes": "fixed entry",
+                    }
+                ).encode("utf-8"),
+            )
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["updated"])
+            self.assertEqual(payload["trade"]["id"], trade_id)
+            self.assertEqual(payload["trade"]["symbol"], "MSFT")
+            self.assertEqual(payload["trade"]["side"], "SELL")
+            self.assertEqual(context.store.list_trades()[0].notes, "fixed entry")
+
+            status, payload = handle_api_request(
+                context,
+                "POST",
+                "/api/dividends",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-02-01",
+                        "symbol": "GOOG",
+                        "gross_amount": 10,
+                        "tax": 1,
+                        "portfolio": "Active",
+                        "currency": "USD",
+                        "notes": "bad dividend",
+                    }
+                ).encode("utf-8"),
+            )
+            dividend_id = payload["dividend"]["id"]
+
+            status, payload = handle_api_request(
+                context,
+                "PUT",
+                f"/api/dividends/{dividend_id}",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-02-02",
+                        "symbol": "MSFT",
+                        "gross_amount": 12,
+                        "tax": 2,
+                        "portfolio": "DCA",
+                        "currency": "USD",
+                        "notes": "fixed dividend",
+                    }
+                ).encode("utf-8"),
+            )
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["updated"])
+            self.assertEqual(payload["dividend"]["id"], dividend_id)
+            self.assertEqual(payload["dividend"]["symbol"], "MSFT")
+            self.assertEqual(payload["dividend"]["net_amount"], 10)
+            self.assertEqual(context.store.list_dividends()[0].notes, "fixed dividend")
+
+            status, payload = handle_api_request(
+                context,
+                "PUT",
+                "/api/trades/missing",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-01-03",
+                        "symbol": "MSFT",
+                        "side": "BUY",
+                        "quantity": 1,
+                        "price": 120,
+                    }
+                ).encode("utf-8"),
+            )
+
+            self.assertEqual(status, 404)
+            self.assertFalse(payload["updated"])
 
     def test_trade_import_rejects_invalid_batch_without_partial_write(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            context = AppContext(CSVStore(temp_dir), NoopPriceProvider())
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
             status, payload = handle_api_request(
                 context,

@@ -8,6 +8,8 @@ const state = {
   performance: { points: [], annual: [] },
   allocation: null,
   charts: { performance: null, annual: null, allocation: null },
+  view: "dashboard",
+  editingRecord: null,
   recordsVisible: false,
   recordPage: 1,
 };
@@ -37,8 +39,25 @@ document.addEventListener("DOMContentLoaded", async () => {
 function setupStaticEnhancements() {
   replaceSvgWithCanvas("performanceChart");
   replaceSvgWithCanvas("annualChart");
+  setupViewTabs();
   setupDividendImportPanel();
-  setupRecordsPanel();
+  setupRecordsPage();
+}
+
+function setupViewTabs() {
+  if (byId("viewTabs")) {
+    return;
+  }
+  const header = document.querySelector(".app-header");
+  const refreshButton = byId("refreshButton");
+  const nav = document.createElement("nav");
+  nav.id = "viewTabs";
+  nav.className = "view-tabs";
+  nav.setAttribute("aria-label", "主要頁面");
+  nav.innerHTML = `
+    <button class="active" type="button" data-view-tab="dashboard">績效總覽</button>
+    <button type="button" data-view-tab="records">紀錄管理</button>`;
+  header.insertBefore(nav, refreshButton);
 }
 
 function replaceSvgWithCanvas(id) {
@@ -78,7 +97,7 @@ function setupDividendImportPanel() {
   );
 }
 
-function setupRecordsPanel() {
+function setupRecordsPanelLegacy() {
   const tableBody = byId("recordsBody");
   if (!tableBody || byId("recordsPanelBody")) {
     return;
@@ -149,6 +168,155 @@ function setupRecordsPanel() {
   body.appendChild(panel.querySelector(".pagination"));
 }
 
+function setupRecordsPage() {
+  const tableBody = byId("recordsBody");
+  if (!tableBody || byId("recordsView")) {
+    return;
+  }
+  const shell = document.querySelector(".app-shell");
+  const panel = tableBody.closest(".table-panel");
+  const tableWrap = tableBody.closest(".table-wrap");
+  const recordsView = document.createElement("section");
+  recordsView.id = "recordsView";
+  recordsView.className = "records-view app-view hidden";
+  shell.appendChild(recordsView);
+  panel.classList.remove("compact");
+  panel.classList.add("records-panel", "records-page");
+  recordsView.appendChild(panel);
+  panel.querySelector("h2").textContent = "紀錄管理";
+  ["日期", "股票", "投組", "幣別", "類型", "金額", "操作"].forEach((label, index) => {
+    const cell = panel.querySelectorAll("thead th")[index];
+    if (cell) {
+      cell.textContent = label;
+    }
+  });
+
+  tableWrap.insertAdjacentHTML(
+    "beforebegin",
+    `
+      <div class="record-filters">
+        <label>
+          類型
+          <select id="recordTypeFilter">
+            <option value="all">全部</option>
+            <option value="trade">交易</option>
+            <option value="dividend">配息</option>
+          </select>
+        </label>
+        <label>
+          投資組合
+          <select id="recordPortfolioFilter">
+            <option value="All">全部</option>
+          </select>
+        </label>
+        <label>
+          股票代號
+          <input id="recordSymbolFilter" type="search" />
+        </label>
+        <label>
+          起日
+          <input id="recordStartFilter" type="date" />
+        </label>
+        <label>
+          訖日
+          <input id="recordEndFilter" type="date" />
+        </label>
+        <label>
+          每頁
+          <select id="recordPageSize">
+            <option value="10">10</option>
+            <option value="25" selected>25</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+      </div>`,
+  );
+  tableWrap.insertAdjacentHTML(
+    "afterend",
+    `
+      <div class="pagination">
+        <button class="secondary" id="recordPrevPage" type="button">上一頁</button>
+        <span id="recordPageText"></span>
+        <button class="secondary" id="recordNextPage" type="button">下一頁</button>
+      </div>`,
+  );
+  recordsView.insertAdjacentHTML(
+    "beforeend",
+    `
+      <section class="form-panel record-edit-panel hidden" id="recordEditPanel">
+        <header>
+          <h2>編輯紀錄</h2>
+        </header>
+        <form id="recordEditForm" class="record-form">
+          <input name="kind" type="hidden" />
+          <input name="id" type="hidden" />
+          <label>
+            日期
+            <input name="date" type="date" required />
+          </label>
+          <label>
+            股票代號
+            <input name="symbol" type="text" required />
+          </label>
+          <label>
+            投資組合
+            <select name="portfolio" data-portfolio-select required></select>
+          </label>
+          <label class="portfolio-new hidden">
+            新投資組合
+            <input name="new_portfolio" type="text" />
+          </label>
+          <label>
+            幣別
+            <select name="currency">
+              <option value="TWD">TWD</option>
+              <option value="USD">USD</option>
+            </select>
+          </label>
+          <div class="record-form-group" data-edit-section="trade">
+            <label>
+              方向
+              <select name="side">
+                <option value="BUY">買進</option>
+                <option value="SELL">賣出</option>
+              </select>
+            </label>
+            <label>
+              股數
+              <input name="quantity" type="number" min="0" step="0.0001" />
+            </label>
+            <label>
+              成交價
+              <input name="price" type="number" min="0" step="0.0001" />
+            </label>
+            <label>
+              手續費
+              <input name="fees" type="number" min="0" step="0.0001" />
+            </label>
+          </div>
+          <div class="record-form-group hidden" data-edit-section="dividend">
+            <label>
+              配息總額
+              <input name="gross_amount" type="number" min="0" step="0.0001" />
+            </label>
+            <label>
+              稅額
+              <input name="tax" type="number" min="0" step="0.0001" />
+            </label>
+          </div>
+          <label class="full">
+            備註
+            <input name="notes" type="text" />
+          </label>
+          <div class="form-actions">
+            <button class="primary" type="submit">儲存修改</button>
+            <button class="secondary" id="cancelRecordEditButton" type="button">取消</button>
+          </div>
+        </form>
+      </section>`,
+  );
+}
+
 function setDefaultDates(defaults = null) {
   const today = new Date();
   const fallbackStart = new Date(today.getFullYear(), 0, 1);
@@ -171,6 +339,9 @@ async function refreshDefaultDates() {
 
 function bindEvents() {
   byId("refreshButton").addEventListener("click", refreshAll);
+  document.querySelectorAll("[data-view-tab]").forEach((button) => {
+    button.addEventListener("click", () => switchView(button.dataset.viewTab));
+  });
   ["asOfInput", "startInput", "endInput", "portfolioFilter", "currencyFilter"].forEach((id) => {
     byId(id).addEventListener("change", refreshAll);
   });
@@ -212,7 +383,12 @@ function bindEvents() {
   byId("downloadDividendTemplateButton").addEventListener("click", downloadDividendTemplate);
   byId("importTradesButton").addEventListener("click", importTradesFromFile);
   byId("importDividendsButton").addEventListener("click", importDividendsFromFile);
-  byId("toggleRecordsButton").addEventListener("click", toggleRecordsPanel);
+  byId("recordEditForm").addEventListener("submit", submitRecordEdit);
+  byId("cancelRecordEditButton").addEventListener("click", cancelRecordEdit);
+  const toggleRecordsButton = byId("toggleRecordsButton");
+  if (toggleRecordsButton) {
+    toggleRecordsButton.addEventListener("click", toggleRecordsPanel);
+  }
   ["recordTypeFilter", "recordPortfolioFilter", "recordStartFilter", "recordEndFilter", "recordPageSize"].forEach((id) => {
     byId(id).addEventListener("change", () => {
       state.recordPage = 1;
@@ -336,7 +512,44 @@ async function submitDividend(event) {
   await refreshAll();
 }
 
+async function submitRecordEdit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const kind = form.elements.kind.value;
+  const id = form.elements.id.value;
+  let payload;
+  try {
+    payload = formPayloadWithPortfolio(form);
+  } catch (error) {
+    setStatus(error.message);
+    return;
+  }
+  delete payload.kind;
+  delete payload.id;
+  const path = kind === "trade" ? `/api/trades/${encodeURIComponent(id)}` : `/api/dividends/${encodeURIComponent(id)}`;
+  if (kind === "trade") {
+    payload.quantity = Number(payload.quantity);
+    payload.price = Number(payload.price);
+    payload.fees = Number(payload.fees || 0);
+    delete payload.gross_amount;
+    delete payload.tax;
+  } else {
+    payload.gross_amount = Number(payload.gross_amount);
+    payload.tax = Number(payload.tax || 0);
+    delete payload.side;
+    delete payload.quantity;
+    delete payload.price;
+    delete payload.fees;
+  }
+  await apiPut(path, payload);
+  cancelRecordEdit();
+  await refreshAll();
+}
+
 async function deleteRecord(kind, id) {
+  if (state.editingRecord?.kind === kind && state.editingRecord?.id === id) {
+    cancelRecordEdit();
+  }
   const path = kind === "trade" ? `/api/trades/${encodeURIComponent(id)}` : `/api/dividends/${encodeURIComponent(id)}`;
   await apiDelete(path);
   await refreshAll();
@@ -439,7 +652,7 @@ function renderSummary() {
     : `<tr><td class="empty" colspan="9">尚無持股</td></tr>`;
 }
 
-function renderRecords() {
+function renderRecordsLegacy() {
   const body = byId("recordsPanelBody");
   const toggle = byId("toggleRecordsButton");
   body.classList.toggle("hidden", !state.recordsVisible);
@@ -474,6 +687,53 @@ function renderRecords() {
   });
 }
 
+function renderRecords() {
+  const tableBody = byId("recordsBody");
+  if (!tableBody || !state.recordsVisible) {
+    return;
+  }
+
+  const rows = state.records.records || [];
+  tableBody.innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `
+        <tr>
+          <td>${escapeHtml(row.date)}</td>
+          <td>${escapeHtml(row.symbol)}</td>
+          <td>${escapeHtml(row.portfolio)}</td>
+          <td>${escapeHtml(row.currency)}</td>
+          <td>${escapeHtml(recordTypeLabel(row))}</td>
+          <td>${money(row.amount, row.currency)}</td>
+          <td>
+            <div class="row-actions">
+              <button class="secondary" type="button" data-edit-kind="${escapeHtml(row.kind)}" data-edit-id="${escapeHtml(row.id)}">編輯</button>
+              <button class="danger" type="button" data-delete-kind="${escapeHtml(row.kind)}" data-delete-id="${escapeHtml(row.id)}">刪除</button>
+            </div>
+          </td>
+        </tr>`,
+        )
+        .join("")
+    : `<tr><td class="empty" colspan="7">尚無紀錄</td></tr>`;
+
+  byId("recordPageText").textContent = `${state.records.page || 1} / ${state.records.total_pages || 1} · ${state.records.total || 0} 筆`;
+  byId("recordPrevPage").disabled = (state.records.page || 1) <= 1;
+  byId("recordNextPage").disabled = (state.records.page || 1) >= (state.records.total_pages || 1);
+  document.querySelectorAll("[data-edit-id]").forEach((button) => {
+    button.addEventListener("click", () => startRecordEdit(button.dataset.editKind, button.dataset.editId));
+  });
+  document.querySelectorAll("[data-delete-id]").forEach((button) => {
+    button.addEventListener("click", () => deleteRecord(button.dataset.deleteKind, button.dataset.deleteId));
+  });
+}
+
+function recordTypeLabelLegacy(row) {
+  if (row.kind === "dividend") {
+    return "配息";
+  }
+  return row.type === "BUY" ? "買進" : "賣出";
+}
+
 function recordTypeLabel(row) {
   if (row.kind === "dividend") {
     return "配息";
@@ -488,6 +748,71 @@ function toggleRecordsPanel() {
     return;
   }
   renderRecords();
+}
+
+function switchView(view) {
+  state.view = view === "records" ? "records" : "dashboard";
+  state.recordsVisible = state.view === "records";
+  document.querySelectorAll("[data-view-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.viewTab === state.view);
+  });
+  document.querySelector(".workspace").classList.toggle("hidden", state.view !== "dashboard");
+  document.querySelector(".side-rail").classList.toggle("hidden", state.view !== "dashboard");
+  byId("recordsView").classList.toggle("hidden", state.view !== "records");
+  document.querySelector(".app-shell").classList.toggle("records-mode", state.view === "records");
+  if (state.recordsVisible) {
+    refreshRecords();
+  }
+}
+
+function startRecordEdit(kind, id) {
+  const record = (state.records.records || []).find((item) => item.kind === kind && item.id === id);
+  if (!record) {
+    return;
+  }
+  state.editingRecord = record;
+  const panel = byId("recordEditPanel");
+  const form = byId("recordEditForm");
+  panel.classList.remove("hidden");
+  form.elements.kind.value = record.kind;
+  form.elements.id.value = record.id;
+  form.elements.date.value = record.date || "";
+  form.elements.symbol.value = record.symbol || "";
+  form.elements.portfolio.value = record.portfolio || selectedPortfolioForForm();
+  form.elements.currency.value = record.currency || inferCurrency(record.symbol);
+  form.elements.notes.value = record.notes || "";
+  form.elements.side.value = record.side || record.type || "BUY";
+  form.elements.quantity.value = record.quantity ?? "";
+  form.elements.price.value = record.price ?? "";
+  form.elements.fees.value = record.fees ?? 0;
+  form.elements.gross_amount.value = record.gross_amount ?? "";
+  form.elements.tax.value = record.tax ?? 0;
+  syncNewPortfolioField(form);
+  setEditSections(record.kind);
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function cancelRecordEdit() {
+  state.editingRecord = null;
+  const panel = byId("recordEditPanel");
+  const form = byId("recordEditForm");
+  if (form) {
+    form.reset();
+    syncNewPortfolioField(form);
+  }
+  if (panel) {
+    panel.classList.add("hidden");
+  }
+}
+
+function setEditSections(kind) {
+  const isTrade = kind === "trade";
+  document.querySelector('[data-edit-section="trade"]').classList.toggle("hidden", !isTrade);
+  document.querySelector('[data-edit-section="dividend"]').classList.toggle("hidden", isTrade);
+  ["side", "quantity", "price"].forEach((name) => {
+    byId("recordEditForm").elements[name].required = isTrade;
+  });
+  byId("recordEditForm").elements.gross_amount.required = !isTrade;
 }
 
 function renderPortfolioOptions() {
@@ -648,6 +973,14 @@ async function apiGet(path) {
 async function apiPost(path, payload) {
   return api(path, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function apiPut(path, payload) {
+  return api(path, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });

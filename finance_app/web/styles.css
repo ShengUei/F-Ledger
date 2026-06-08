@@ -85,6 +85,31 @@ select {
   font-size: 22px;
 }
 
+.view-tabs {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f2f4f7;
+}
+
+.view-tabs button {
+  min-height: 34px;
+  min-width: 92px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.view-tabs button.active {
+  background: var(--ink);
+  color: #fff;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, min(30vw, 420px));
@@ -94,6 +119,10 @@ select {
   margin: 0 auto;
   padding: 18px;
   overflow-x: clip;
+}
+
+.app-shell.records-mode {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .workspace,
@@ -543,6 +572,23 @@ tr:last-child td {
   align-items: center;
 }
 
+.records-view {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: 18px;
+  align-items: start;
+  min-width: 0;
+}
+
+.records-view.hidden {
+  display: none;
+}
+
+.records-page {
+  min-width: 0;
+}
+
 .records-panel-body {
   display: grid;
   gap: 12px;
@@ -571,6 +617,29 @@ tr:last-child td {
 .pagination button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.record-edit-panel {
+  position: sticky;
+  top: 14px;
+}
+
+.record-form-group {
+  display: contents;
+}
+
+.form-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 8px;
+  justify-content: flex-end;
+  white-space: nowrap;
 }
 
 .primary {
@@ -629,6 +698,7 @@ tr:last-child td {
 
 @media (max-width: 800px) {
   .app-header {
+    flex-wrap: wrap;
     padding: 14px;
   }
 
@@ -662,6 +732,14 @@ tr:last-child td {
 
   .allocation-grid {
     grid-template-columns: 1fr;
+  }
+
+  .records-view {
+    grid-template-columns: 1fr;
+  }
+
+  .record-edit-panel {
+    position: static;
   }
 
   .toolbar label {

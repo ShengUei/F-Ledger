@@ -10,59 +10,81 @@ selected date range.
 
 - Python backend plus HTML and JavaScript frontend.
 - Yahoo Finance is the market data source.
-- No Redis, database, ELK, or external service.
-- User records and cached market data are managed as CSV files.
+- No Redis, ELK, external database server, or external service.
+- User records are stored in SQLite through Python's standard `sqlite3` module.
+- Batch import/export templates use CSV files.
 - The application is started locally and used through a browser.
 - Charts use the vendored browser build of Chart.js 4.5.0, an MIT-licensed
   open-source JavaScript charting library.
 - The design should keep room for future features.
 - Development follows SDD and TDD: this file defines behavior; tests protect
-  storage, calculation, and API behavior.
+  storage, calculation, API, and UI-facing data behavior.
 
-## CSV Files
+## SQLite Storage
 
-Current storage schema version is tracked in `data/metadata.json`.
+Current storage schema version is tracked in `data/metadata.json` and in the
+SQLite `PRAGMA user_version`.
 
 ```json
 {
-  "schema_version": 3,
-  "storage_backend": "csv"
+  "schema_version": 4,
+  "storage_backend": "sqlite"
 }
 ```
 
-The application migrates older CSV files at startup. Existing rows without
+The main database file is `data/portfolio.sqlite3`.
+
+Existing `data/trades.csv` and `data/dividends.csv` files are imported into
+SQLite automatically when the SQLite tables are empty. Existing CSV rows without
 `portfolio` receive `General`; existing rows without `currency` are inferred
 from the symbol.
 
-### `trades.csv`
+### `trades`
 
 | column | type | notes |
 | --- | --- | --- |
-| id | string | generated UUID |
-| date | YYYY-MM-DD | transaction date |
-| symbol | string | stock ticker, normalized uppercase |
+| id | text primary key | generated UUID |
+| date | YYYY-MM-DD text | transaction date |
+| symbol | text | stock ticker, normalized uppercase |
 | side | BUY or SELL | transaction direction |
-| quantity | decimal | positive share quantity |
-| price | decimal | unit price |
-| fees | decimal | transaction fee, default 0 |
-| currency | string | source currency, default inferred from symbol |
-| portfolio | string | investment portfolio name, default `General` |
-| notes | string | optional |
+| quantity | real | positive share quantity |
+| price | real | unit price |
+| fees | real | transaction fee, default 0 |
+| currency | text | source currency, default inferred from symbol |
+| portfolio | text | investment portfolio name, default `General` |
+| notes | text | optional |
 
-### `dividends.csv`
+### `dividends`
 
 | column | type | notes |
 | --- | --- | --- |
-| id | string | generated UUID |
-| date | YYYY-MM-DD | payment date |
-| symbol | string | stock ticker, normalized uppercase |
-| gross_amount | decimal | total dividend amount before tax |
-| tax | decimal | withholding or other tax, default 0 |
-| currency | string | source currency, default inferred from symbol |
-| portfolio | string | investment portfolio name, default `General` |
-| notes | string | optional |
+| id | text primary key | generated UUID |
+| date | YYYY-MM-DD text | payment date |
+| symbol | text | stock ticker, normalized uppercase |
+| gross_amount | real | total dividend amount before tax |
+| tax | real | withholding or other tax, default 0 |
+| currency | text | source currency, default inferred from symbol |
+| portfolio | text | investment portfolio name, default `General` |
+| notes | text | optional |
 
-### Price Cache
+## Import CSV Templates
+
+Trade imports use:
+
+```csv
+date,symbol,side,quantity,price,fees,currency,portfolio,notes
+```
+
+Dividend imports use:
+
+```csv
+date,symbol,gross_amount,tax,currency,portfolio,notes
+```
+
+The import format is not the storage format; it is a user-facing batch entry
+format parsed by the WebUI and submitted to the API.
+
+## Price Cache
 
 Files live in `price_cache/{symbol}/{year}.csv`, for example
 `price_cache/GOOG/2024.csv`. Legacy flat files such as `price_cache/GOOG.csv`
@@ -73,7 +95,7 @@ are migrated into year files when read.
 | date | YYYY-MM-DD | market date |
 | close | decimal | adjusted close from Yahoo Finance when available |
 
-### Result Cache
+## Result Cache
 
 Performance results live in `result_cache/{sha256}.json`. The cache key includes
 query parameters plus all trade and dividend records, so changing user records
@@ -83,12 +105,12 @@ creates a different key. Record mutations also clear cached result files.
 
 `StorageBackend` defines the storage contract used by the HTTP layer:
 
-- list, add, and delete trades.
-- list, add, and delete dividends.
+- list, add, update, and delete trades.
+- list, add, update, and delete dividends.
 - expose price and result cache directories.
 - clear result cache after data mutations.
 
-`CSVStore` is the current implementation. Future storage formats can implement
+`SQLiteStore` is the current implementation. Storage formats can change behind
 the same protocol without changing analytics or WebUI code.
 
 ## Portfolio Math
@@ -117,10 +139,9 @@ At a valuation date:
 If Yahoo price data is unavailable, the engine uses the latest transaction price
 before the valuation date as a fallback and returns a warning.
 
-For a selected date range, period summary compares the ending summary with the
-summary from the day before the start date. Market value is the ending market
-value; total gain, realized gain, sell gain, dividends, and cash flow are shown
-for the selected period.
+For a selected date range, period summary uses only records in the selected
+range. Market value, positions, total gain, realized gain, sell gain, dividends,
+and cash flow are shown for the selected period.
 
 When a report display currency is selected:
 
@@ -136,12 +157,14 @@ When a report display currency is selected:
 | method | path | behavior |
 | --- | --- | --- |
 | GET | `/api/defaults` | returns default as-of, start, and end dates; as-of uses the latest Yahoo market day when possible |
-| GET | `/api/records?kind=trade&page=1&page_size=25&portfolio=Active&symbol=GOOG` | returns filtered and paginated records |
+| GET | `/api/records?kind=trade&page=1&page_size=25&portfolio=Active&symbol=GOOG` | returns filtered and paginated records with edit fields |
 | POST | `/api/trades` | creates a trade |
+| PUT | `/api/trades/{id}` | updates a trade |
 | GET | `/api/templates/trades` | returns a CSV template for trade batch import |
 | POST | `/api/import/trades` | imports multiple trade records from parsed CSV rows |
 | DELETE | `/api/trades/{id}` | deletes a trade |
 | POST | `/api/dividends` | creates a dividend |
+| PUT | `/api/dividends/{id}` | updates a dividend |
 | GET | `/api/templates/dividends` | returns a CSV template for dividend batch import |
 | POST | `/api/import/dividends` | imports multiple dividend records from parsed CSV rows |
 | DELETE | `/api/dividends/{id}` | deletes a dividend |
@@ -151,26 +174,38 @@ When a report display currency is selected:
 | GET | `/api/performance?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=monthly&portfolio=Active&currency=TWD` | returns filtered performance series and annual bars |
 | GET | `/api/allocation?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns selected, overall, and per-portfolio holding weights |
 
+## WebUI
+
+- The dashboard view shows filters, metrics, charts, holdings, allocation, and record entry/import forms.
+- The records management view is separate from the dashboard.
+- The records management view supports type, portfolio, symbol, date range, and page-size filters.
+- The records management view supports pagination.
+- Each visible record can be edited or deleted.
+- Editing a trade supports date, symbol, portfolio, currency, side, quantity, price, fees, and notes.
+- Editing a dividend supports date, symbol, portfolio, currency, gross amount, tax, and notes.
+
 ## Acceptance Scenarios
 
-1. A user can add a BUY trade and see it in the records table.
-2. A user can add a SELL trade and realized gain is computed with average cost.
-3. A user can add a dividend and net dividend appears in summary and charts.
-4. A user can select a date range and interval to inspect performance.
-5. A user can inspect yearly performance bars for multi-year records.
-6. The app can run locally with `python -m finance_app`.
-7. A user can assign records to portfolios such as `Active` or `DCA`.
-8. A user can view all-stock performance or performance for one portfolio.
-9. A user can view holding allocation for the full account or selected portfolio as an interactive pie chart.
-10. A user can record source currency for US and Taiwan stock transactions.
-11. A user can switch the report display currency between TWD and USD.
-12. Holdings, allocation, performance charts, and annual charts update when the display currency changes.
-13. A user can choose chart X-axis label format and Y-axis value mode.
-14. A user can hover a chart to inspect the nearest point or annual bar values.
-15. A user can select an existing portfolio from a dropdown or create a new portfolio while adding a record.
-16. A user can download a trade CSV import template.
-17. A user can upload a trade CSV file and import multiple trade records at once.
-18. A user can download a dividend CSV import template and import multiple dividend records at once.
-19. Records are hidden by default and can be shown with filtering and pagination.
-20. The default start date is January 1 of the current year, end date is today, and as-of date is the latest available trading day when today is not a trading day.
-21. Top-level metrics update from the selected date range instead of always showing all-time values.
+1. A user can add a BUY trade and see it in the records management page.
+2. A user can edit an incorrect trade and see analytics update from the corrected data.
+3. A user can add a SELL trade and realized gain is computed with average cost.
+4. A user can add and edit a dividend and net dividend appears in summary and charts.
+5. A user can select a date range and interval to inspect performance.
+6. A user can inspect yearly performance bars for multi-year records.
+7. The app can run locally with `python -m finance_app`.
+8. A user can assign records to portfolios such as `Active` or `DCA`.
+9. A user can view all-stock performance or performance for one portfolio.
+10. A user can view holding allocation for the full account or selected portfolio as an interactive pie chart.
+11. A user can record source currency for US and Taiwan stock transactions.
+12. A user can switch the report display currency between TWD and USD.
+13. Holdings, allocation, performance charts, and annual charts update when the display currency changes.
+14. A user can choose chart X-axis label format and Y-axis value mode.
+15. A user can hover a chart to inspect the nearest point or annual bar values.
+16. A user can select an existing portfolio from a dropdown or create a new portfolio while adding or editing a record.
+17. A user can download a trade CSV import template.
+18. A user can upload a trade CSV file and import multiple trade records at once.
+19. A user can download a dividend CSV import template and import multiple dividend records at once.
+20. Records are managed in a separate page with filtering and pagination.
+21. The default start date is January 1 of the current year, end date is today, and as-of date is the latest available trading day when today is not a trading day.
+22. Top-level metrics update from the selected date range instead of always showing all-time values.
+23. Existing CSV records are imported into SQLite automatically when the SQLite database is empty.
