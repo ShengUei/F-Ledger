@@ -19,9 +19,9 @@ class SQLiteStoreTests(unittest.TestCase):
                     date=date(2024, 1, 2),
                     symbol="aapl",
                     side="buy",
-                    quantity=10,
-                    price=100,
-                    fees=1.5,
+                    quantity=10.123456,
+                    price=100.123456,
+                    fees=1.123456,
                     notes="first lot",
                     portfolio="Active",
                     currency="USD",
@@ -32,8 +32,8 @@ class SQLiteStoreTests(unittest.TestCase):
                     id="",
                     date=date(2024, 3, 1),
                     symbol="aapl",
-                    gross_amount=12,
-                    tax=2,
+                    gross_amount=12.123456,
+                    tax=2.123456,
                     notes="cash dividend",
                     portfolio="Active",
                     currency="USD",
@@ -45,10 +45,14 @@ class SQLiteStoreTests(unittest.TestCase):
             self.assertEqual(len(reloaded.list_dividends()), 1)
             self.assertEqual(reloaded.list_trades()[0].id, trade.id)
             self.assertEqual(reloaded.list_trades()[0].symbol, "AAPL")
+            self.assertAlmostEqual(reloaded.list_trades()[0].quantity, 10.123456, places=6)
+            self.assertAlmostEqual(reloaded.list_trades()[0].price, 100.123456, places=6)
+            self.assertAlmostEqual(reloaded.list_trades()[0].fees, 1.123456, places=6)
             self.assertEqual(reloaded.list_trades()[0].portfolio, "Active")
             self.assertEqual(reloaded.list_trades()[0].currency, "USD")
             self.assertEqual(reloaded.list_dividends()[0].id, dividend.id)
-            self.assertEqual(reloaded.list_dividends()[0].gross_amount, 12)
+            self.assertAlmostEqual(reloaded.list_dividends()[0].gross_amount, 12.123456, places=6)
+            self.assertAlmostEqual(reloaded.list_dividends()[0].tax, 2.123456, places=6)
             self.assertEqual(reloaded.list_dividends()[0].portfolio, "Active")
             self.assertEqual(reloaded.list_dividends()[0].currency, "USD")
 

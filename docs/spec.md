@@ -183,6 +183,8 @@ When a report display currency is selected:
 - Each visible record can be edited or deleted.
 - Editing a trade supports date, symbol, portfolio, currency, side, quantity, price, fees, and notes.
 - Editing a dividend supports date, symbol, portfolio, currency, gross amount, tax, and notes.
+- Trade quantity, trade price, fees, dividend gross amount, and tax inputs accept up to six decimal places.
+- New trade and dividend forms default their date field to today, not the settlement/as-of date.
 
 ## Acceptance Scenarios
 
@@ -209,3 +211,5 @@ When a report display currency is selected:
 21. The default start date is January 1 of the current year, end date is today, and as-of date is the latest available trading day when today is not a trading day.
 22. Top-level metrics update from the selected date range instead of always showing all-time values.
 23. Existing CSV records are imported into SQLite automatically when the SQLite database is empty.
+24. New and edited decimal amount fields accept six decimal places.
+25. New trade and dividend forms default to today's date.

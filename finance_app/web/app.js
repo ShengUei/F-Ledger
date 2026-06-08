@@ -10,6 +10,7 @@ const state = {
   charts: { performance: null, annual: null, allocation: null },
   view: "dashboard",
   editingRecord: null,
+  defaultRecordDate: "",
   recordsVisible: false,
   recordPage: 1,
 };
@@ -283,25 +284,25 @@ function setupRecordsPage() {
             </label>
             <label>
               股數
-              <input name="quantity" type="number" min="0" step="0.0001" />
+              <input name="quantity" type="number" min="0" step="0.000001" />
             </label>
             <label>
               成交價
-              <input name="price" type="number" min="0" step="0.0001" />
+              <input name="price" type="number" min="0" step="0.000001" />
             </label>
             <label>
               手續費
-              <input name="fees" type="number" min="0" step="0.0001" />
+              <input name="fees" type="number" min="0" step="0.000001" />
             </label>
           </div>
           <div class="record-form-group hidden" data-edit-section="dividend">
             <label>
               配息總額
-              <input name="gross_amount" type="number" min="0" step="0.0001" />
+              <input name="gross_amount" type="number" min="0" step="0.000001" />
             </label>
             <label>
               稅額
-              <input name="tax" type="number" min="0" step="0.0001" />
+              <input name="tax" type="number" min="0" step="0.000001" />
             </label>
           </div>
           <label class="full">
@@ -321,11 +322,12 @@ function setDefaultDates(defaults = null) {
   const today = new Date();
   const fallbackStart = new Date(today.getFullYear(), 0, 1);
   const fallbackAsOf = previousWeekday(today);
+  state.defaultRecordDate = defaults?.today || toInputDate(today);
   byId("asOfInput").value = defaults?.as_of || toInputDate(fallbackAsOf);
   byId("endInput").value = defaults?.end || toInputDate(today);
   byId("startInput").value = defaults?.start || toInputDate(fallbackStart);
   document.querySelectorAll("form input[name='date']").forEach((input) => {
-    input.value = byId("asOfInput").value;
+    input.value = state.defaultRecordDate;
   });
 }
 
@@ -1158,7 +1160,7 @@ function formPayloadWithPortfolio(form) {
 
 function resetRecordForm(form) {
   form.reset();
-  form.elements.date.value = byId("asOfInput").value;
+  form.elements.date.value = state.defaultRecordDate || byId("endInput").value;
   form.elements.portfolio.value = selectedPortfolioForForm();
   form.elements.currency.value = byId("currencyFilter").value;
   if (form.elements.fees) {
