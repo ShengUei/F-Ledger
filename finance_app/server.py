@@ -65,9 +65,14 @@ def _handle_api_request(
     analytics = PortfolioAnalytics(context.price_provider, context.result_cache)
 
     if method == "GET" and path == "/api/records":
+        if hasattr(store, "query_records"):
+            return 200, _records_payload_sql(store, query)
         return 200, _records_payload(store.list_trades(), store.list_dividends(), query)
 
     if method == "GET" and path == "/api/portfolios":
+        names_fn = getattr(store, "portfolio_names", None)
+        if callable(names_fn):
+            return 200, {"portfolios": names_fn()}
         trades = store.list_trades()
         dividends = store.list_dividends()
         return 200, {"portfolios": portfolio_names(trades, dividends)}
@@ -108,9 +113,22 @@ def _handle_api_request(
                 trades.append(Trade.from_dict(record))
             except ValueError as exc:
                 raise ValueError(f"row {index}: {exc}") from exc
-        saved = [store.add_trade(trade) for trade in trades]
+        existing_keys = {_trade_dedup_key(trade) for trade in store.list_trades()}
+        saved = []
+        skipped = 0
+        for trade in trades:
+            key = _trade_dedup_key(trade)
+            if key in existing_keys:
+                skipped += 1
+                continue
+            saved.append(store.add_trade(trade))
+            existing_keys.add(key)
         _clear_result_cache(context)
-        return 201, {"imported_count": len(saved), "trades": [trade.to_json() for trade in saved]}
+        return 201, {
+            "imported_count": len(saved),
+            "skipped_duplicates": skipped,
+            "trades": [trade.to_json() for trade in saved],
+        }
 
     if method == "POST" and path == "/api/dividends":
         payload = _read_json(body)
@@ -131,9 +149,22 @@ def _handle_api_request(
                 dividends.append(Dividend.from_dict(record))
             except ValueError as exc:
                 raise ValueError(f"row {index}: {exc}") from exc
-        saved = [store.add_dividend(dividend) for dividend in dividends]
+        existing_keys = {_dividend_dedup_key(dividend) for dividend in store.list_dividends()}
+        saved = []
+        skipped = 0
+        for dividend in dividends:
+            key = _dividend_dedup_key(dividend)
+            if key in existing_keys:
+                skipped += 1
+                continue
+            saved.append(store.add_dividend(dividend))
+            existing_keys.add(key)
         _clear_result_cache(context)
-        return 201, {"imported_count": len(saved), "dividends": [dividend.to_json() for dividend in saved]}
+        return 201, {
+            "imported_count": len(saved),
+            "skipped_duplicates": skipped,
+            "dividends": [dividend.to_json() for dividend in saved],
+        }
 
     if method == "PUT" and path.startswith("/api/trades/"):
         record_id = path.rsplit("/", 1)[-1]
@@ -205,6 +236,8 @@ def _handle_api_request(
         interval = _query_one(query, "interval", "monthly")
         portfolio = _query_optional(query, "portfolio")
         currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
+        version_fn = getattr(store, "data_version", None)
+        cache_token = f"{version_fn()}:{len(trades)}:{len(dividends)}" if callable(version_fn) else None
         return 200, analytics.performance(
             trades,
             dividends,
@@ -213,6 +246,7 @@ def _handle_api_request(
             interval,
             portfolio=portfolio,
             display_currency=currency,
+            cache_token=cache_token,
         )
 
     if method == "GET" and path == "/api/allocation":
@@ -295,6 +329,65 @@ def _records_payload(trades: list[Trade], dividends: list[Dividend], query: dict
         "total": total,
         "total_pages": total_pages,
     }
+
+
+def _records_payload_sql(store: SQLiteStore, query: dict[str, list[str]]) -> dict:
+    kind = (_query_one(query, "kind", "all") or "all").lower()
+    symbol = (_query_optional(query, "symbol") or "").strip().upper()
+    portfolio = _query_optional(query, "portfolio")
+    portfolio = None if not portfolio or portfolio == "All" else portfolio
+    start_text = _query_optional(query, "start")
+    end_text = _query_optional(query, "end")
+    start = parse_date(start_text, "start") if start_text else None
+    end = parse_date(end_text, "end") if end_text else None
+    page_size = min(200, max(1, _query_int(query, "page_size", 25)))
+
+    rows, total, page = store.query_records(
+        kind=kind if kind in {"trade", "dividend"} else None,
+        symbol_contains=symbol or None,
+        portfolio=portfolio,
+        start=start.isoformat() if start else None,
+        end=end.isoformat() if end else None,
+        page=max(1, _query_int(query, "page", 1)),
+        page_size=page_size,
+    )
+    records = [
+        _trade_record(Trade.from_dict(row)) if row["kind"] == "trade" else _dividend_record(Dividend.from_dict(row))
+        for row in rows
+    ]
+    return {
+        "records": records,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
+def _trade_dedup_key(trade: Trade) -> tuple[str, ...]:
+    row = trade.to_row()
+    return (
+        row["date"],
+        row["symbol"],
+        row["side"],
+        row["quantity"],
+        row["price"],
+        row["fees"],
+        row["currency"],
+        row["portfolio"],
+    )
+
+
+def _dividend_dedup_key(dividend: Dividend) -> tuple[str, ...]:
+    row = dividend.to_row()
+    return (
+        row["date"],
+        row["symbol"],
+        row["gross_amount"],
+        row["tax"],
+        row["currency"],
+        row["portfolio"],
+    )
 
 
 def _trade_record(trade: Trade) -> dict:
@@ -431,6 +524,10 @@ class PortfolioRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if relative.startswith("vendor/"):
+            self.send_header("Cache-Control", "public, max-age=604800, immutable")
+        else:
+            self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 

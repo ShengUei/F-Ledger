@@ -287,6 +287,7 @@ class SQLiteStore:
                 """
             )
             connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+            connection.execute("PRAGMA journal_mode=WAL")
             self._write_metadata_rows(connection)
         self._migrate_legacy_csv_if_empty()
         self._write_metadata_file()
@@ -295,6 +296,7 @@ class SQLiteStore:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA synchronous=NORMAL")
         try:
             yield connection
             connection.commit()
@@ -326,10 +328,68 @@ class SQLiteStore:
             ).fetchall()
         return [Dividend.from_dict(dict(row)) for row in rows]
 
+    def portfolio_names(self) -> list[str]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT portfolio FROM trades UNION SELECT DISTINCT portfolio FROM dividends ORDER BY 1"
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def query_records(
+        self,
+        *,
+        kind: str | None = None,
+        symbol_contains: str | None = None,
+        portfolio: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        page: int = 1,
+        page_size: int = 25,
+    ) -> tuple[list[dict], int, int]:
+        """Filtered, paginated trade+dividend rows; returns (rows, total, effective_page)."""
+        base = """
+            SELECT 'trade' AS kind, id, date, symbol, portfolio, currency, side, quantity, price, fees,
+                   NULL AS gross_amount, NULL AS tax, notes
+            FROM trades
+            UNION ALL
+            SELECT 'dividend' AS kind, id, date, symbol, portfolio, currency, NULL AS side, NULL AS quantity,
+                   NULL AS price, NULL AS fees, gross_amount, tax, notes
+            FROM dividends
+        """
+        clauses = []
+        params: list[object] = []
+        if kind in {"trade", "dividend"}:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if symbol_contains:
+            clauses.append("instr(UPPER(symbol), ?) > 0")
+            params.append(symbol_contains.upper())
+        if portfolio:
+            clauses.append("portfolio = ?")
+            params.append(portfolio)
+        if start:
+            clauses.append("date >= ?")
+            params.append(start)
+        if end:
+            clauses.append("date <= ?")
+            params.append(end)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock, self._connect() as connection:
+            total = connection.execute(f"SELECT COUNT(*) FROM ({base}){where}", params).fetchone()[0]
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            effective_page = min(total_pages, max(1, page))
+            offset = (effective_page - 1) * page_size
+            rows = connection.execute(
+                f"SELECT * FROM ({base}){where} ORDER BY date DESC, symbol DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, page_size, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], total, effective_page
+
     def add_trade(self, trade: Trade) -> Trade:
         saved = trade.with_id()
         with self._lock, self._connect() as connection:
             self._insert_trade(connection, saved)
+            self._bump_data_version(connection)
             self.clear_result_cache()
         return saved
 
@@ -337,8 +397,23 @@ class SQLiteStore:
         saved = dividend.with_id()
         with self._lock, self._connect() as connection:
             self._insert_dividend(connection, saved)
+            self._bump_data_version(connection)
             self.clear_result_cache()
         return saved
+
+    def data_version(self) -> int:
+        with self._lock, self._connect() as connection:
+            row = connection.execute("SELECT value FROM metadata WHERE key = 'data_version'").fetchone()
+        return int(row["value"]) if row else 0
+
+    @staticmethod
+    def _bump_data_version(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            INSERT INTO metadata (key, value) VALUES ('data_version', '1')
+            ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+            """
+        )
 
     def update_trade(self, record_id: str, trade: Trade) -> Trade | None:
         saved = Trade(
@@ -376,6 +451,7 @@ class SQLiteStore:
             )
             if cursor.rowcount == 0:
                 return None
+            self._bump_data_version(connection)
             self.clear_result_cache()
         return saved
 
@@ -411,6 +487,7 @@ class SQLiteStore:
             )
             if cursor.rowcount == 0:
                 return None
+            self._bump_data_version(connection)
             self.clear_result_cache()
         return saved
 
@@ -421,10 +498,13 @@ class SQLiteStore:
         return self._delete_by_id("dividends", record_id)
 
     def _delete_by_id(self, table: str, record_id: str) -> bool:
+        if table not in {"trades", "dividends"}:
+            raise ValueError(f"unsupported table: {table}")
         with self._lock, self._connect() as connection:
             cursor = connection.execute(f"DELETE FROM {table} WHERE id = ?", (record_id,))
             if cursor.rowcount == 0:
                 return False
+            self._bump_data_version(connection)
             self.clear_result_cache()
             return True
 

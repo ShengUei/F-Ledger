@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from datetime import date
 
-from finance_app.analytics import PortfolioAnalytics
+from finance_app.analytics import PortfolioAnalytics, max_drawdown_pct, xirr
 from finance_app.cache import JSONResultCache
 from finance_app.models import Dividend, Trade
 
@@ -11,14 +11,24 @@ class FakePriceProvider:
     def __init__(self, prices, fx_rates=None):
         self.prices = prices
         self.fx_rates = fx_rates or {}
+        self.price_calls = 0
+        self.fx_calls = 0
 
     def get_prices(self, symbol, start, end):
+        self.price_calls += 1
         return self.prices.get(symbol, {})
 
     def get_fx_rate(self, from_currency, to_currency, as_of):
+        self.fx_calls += 1
         if from_currency == to_currency:
             return 1.0
         return self.fx_rates.get((from_currency, to_currency, as_of), 1.0)
+
+
+class FailingFxProvider(FakePriceProvider):
+    def get_fx_rate(self, from_currency, to_currency, as_of):
+        self.fx_calls += 1
+        raise ValueError("no rate")
 
 
 class PortfolioAnalyticsTests(unittest.TestCase):
@@ -227,6 +237,109 @@ class PortfolioAnalyticsTests(unittest.TestCase):
             self.assertFalse(first["cache"]["hit"])
             self.assertTrue(second["cache"]["hit"])
             self.assertEqual(first["points"], second["points"])
+
+    def test_price_and_fx_lookups_are_memoized_per_instance(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", currency="USD"),
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 5, 100, 0, "", currency="USD"),
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 2, 100, 0, "", currency="USD"),
+        ]
+        prices = {"GOOG": {date(2024, 12, 31): 120}}
+        fx_rates = {("USD", "TWD", date(2024, 1, 2)): 30, ("USD", "TWD", date(2024, 12, 31)): 31}
+        provider = FakePriceProvider(prices, fx_rates)
+        analytics = PortfolioAnalytics(provider)
+
+        analytics.summary(trades, [], date(2024, 12, 31), display_currency="TWD")
+        # Three same-day trades plus the position price conversion: one FX call per unique date.
+        self.assertEqual(provider.fx_calls, 2)
+        self.assertEqual(provider.price_calls, 1)
+
+        analytics.summary(trades, [], date(2024, 12, 31), display_currency="TWD")
+        self.assertEqual(provider.fx_calls, 2)
+        self.assertEqual(provider.price_calls, 1)
+
+    def test_fx_failure_warns_once_per_pair_and_date(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", currency="USD"),
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 5, 100, 0, "", currency="USD"),
+        ]
+        prices = {"GOOG": {date(2024, 1, 2): 120}}
+        provider = FailingFxProvider(prices)
+        analytics = PortfolioAnalytics(provider)
+
+        summary = analytics.summary(trades, [], date(2024, 1, 2), display_currency="TWD")
+
+        fx_warnings = [warning for warning in summary["warnings"] if "USD/TWD" in warning]
+        self.assertEqual(len(fx_warnings), 1)
+        self.assertEqual(provider.fx_calls, 1)
+
+    def test_allocation_shares_price_lookups_across_portfolios(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 10, 100, 0, "", "Active"),
+            Trade("", date(2024, 1, 2), "GOOG", "BUY", 5, 80, 0, "", "DCA"),
+        ]
+        prices = {"GOOG": {date(2024, 12, 31): 120}}
+        provider = FakePriceProvider(prices)
+        analytics = PortfolioAnalytics(provider)
+
+        result = analytics.allocation(trades, [], date(2024, 12, 31))
+
+        self.assertEqual([item["portfolio"] for item in result["portfolios"]], ["Active", "DCA"])
+        self.assertLessEqual(provider.price_calls, 3)
+
+    def test_period_summary_reports_annualized_return(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 100, 0, ""),
+        ]
+        prices = {"AAPL": {date(2024, 12, 31): 110}}
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.period_summary(trades, [], date(2024, 1, 1), date(2024, 12, 31))
+
+        self.assertAlmostEqual(result["annualized_return_pct"], 0.10, places=2)
+
+    def test_period_summary_annualized_return_is_null_when_undefined(self):
+        analytics = PortfolioAnalytics(FakePriceProvider({}))
+        result = analytics.period_summary([], [], date(2024, 1, 1), date(2024, 12, 31))
+        self.assertIsNone(result["annualized_return_pct"])
+
+    def test_xirr_known_value_and_undefined_cases(self):
+        rate = xirr([(date(2024, 1, 1), -1000.0), (date(2024, 12, 31), 1100.0)])
+        self.assertAlmostEqual(rate, 0.10, places=2)
+
+        self.assertIsNone(xirr([]))
+        self.assertIsNone(xirr([(date(2024, 1, 1), -1000.0)]))
+        self.assertIsNone(xirr([(date(2024, 1, 1), -1000.0), (date(2024, 6, 1), -500.0)]))
+        self.assertIsNone(xirr([(date(2024, 1, 1), -1000.0), (date(2024, 1, 1), 1100.0)]))
+
+    def test_max_drawdown_from_return_series(self):
+        points = [
+            {"return_pct": 0.0},
+            {"return_pct": 0.5},
+            {"return_pct": 0.2},
+            {"return_pct": 0.8},
+        ]
+        self.assertAlmostEqual(max_drawdown_pct(points), 1 - 1.2 / 1.5, places=6)
+        self.assertEqual(max_drawdown_pct([]), 0.0)
+        self.assertEqual(max_drawdown_pct([{"return_pct": 0.3}]), 0.0)
+
+    def test_performance_includes_max_drawdown(self):
+        trades = [
+            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
+        ]
+        prices = {
+            "AAPL": {
+                date(2024, 1, 31): 12,
+                date(2024, 2, 29): 9,
+                date(2024, 3, 31): 13,
+            }
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.performance(trades, [], date(2024, 1, 1), date(2024, 3, 31), "monthly")
+
+        self.assertIn("max_drawdown_pct", result)
+        self.assertGreater(result["max_drawdown_pct"], 0.0)
 
 
 if __name__ == "__main__":

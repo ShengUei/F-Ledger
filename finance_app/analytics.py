@@ -46,9 +46,18 @@ class PositionState:
 
 
 class PortfolioAnalytics:
+    """Portfolio calculations over trade/dividend records.
+
+    Instances are request-scoped (created per API request in server.py); the
+    price/FX memos below rely on that. Hoisting an instance to module or app
+    scope would turn them into stale shared caches.
+    """
+
     def __init__(self, price_provider: PriceProvider, result_cache: ResultCache | None = None) -> None:
         self.price_provider = price_provider
         self.result_cache = result_cache or NullResultCache()
+        self._price_memo: dict[tuple[str, date, date], dict[date, float]] = {}
+        self._fx_memo: dict[tuple[str, str, date], tuple[float, str | None]] = {}
 
     def summary(
         self,
@@ -146,6 +155,9 @@ class PortfolioAnalytics:
         filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
         period_trades, period_dividends = filter_records_by_date(filtered_trades, filtered_dividends, start, end)
         ending = self.summary(period_trades, period_dividends, end, display_currency=report_currency)
+        annualized = self._annualized_return(
+            period_trades, period_dividends, end, ending["market_value"], report_currency
+        )
 
         return {
             "start": start.isoformat(),
@@ -163,9 +175,37 @@ class PortfolioAnalytics:
             "dividends": ending["dividends"],
             "total_gain": ending["total_gain"],
             "return_pct": ending["return_pct"],
+            "annualized_return_pct": annualized,
             "positions": ending["positions"],
             "warnings": ending["warnings"],
         }
+
+    def _annualized_return(
+        self,
+        trades: list[Trade],
+        dividends: list[Dividend],
+        end: date,
+        ending_market_value: float,
+        report_currency: str,
+    ) -> float | None:
+        discard: list[str] = []
+        flows: list[tuple[date, float]] = []
+        for trade in trades:
+            if trade.side == "BUY":
+                amount = -(trade.quantity * trade.price + trade.fees)
+            else:
+                amount = trade.quantity * trade.price - trade.fees
+            display_amount = self._convert(amount, trade.currency, report_currency, trade.date, discard)
+            flows.append((trade.date, display_amount))
+        for dividend in dividends:
+            display_amount = self._convert(
+                dividend.net_amount, dividend.currency, report_currency, dividend.date, discard
+            )
+            flows.append((dividend.date, display_amount))
+        if ending_market_value:
+            flows.append((end, ending_market_value))
+        rate = xirr(flows)
+        return round_number(rate) if rate is not None else None
 
     def performance(
         self,
@@ -176,11 +216,14 @@ class PortfolioAnalytics:
         interval: str = "monthly",
         portfolio: str | None = None,
         display_currency: str = DEFAULT_DISPLAY_CURRENCY,
+        cache_token: str | None = None,
     ) -> dict:
         if end < start:
             raise ValueError("end must be on or after start")
         report_currency = normalize_report_currency(display_currency)
-        cache_key = performance_cache_key(trades, dividends, start, end, interval, portfolio, report_currency)
+        cache_key = performance_cache_key(
+            trades, dividends, start, end, interval, portfolio, report_currency, cache_token
+        )
         cached = self.result_cache.get(cache_key)
         if cached is not None:
             cached["cache"] = {"hit": True, "key": cache_key}
@@ -201,6 +244,7 @@ class PortfolioAnalytics:
             "currency": report_currency,
             "points": points,
             "annual": annual,
+            "max_drawdown_pct": max_drawdown_pct(points),
         }
         self.result_cache.set(cache_key, result)
         result["cache"] = {"hit": False, "key": cache_key}
@@ -216,24 +260,40 @@ class PortfolioAnalytics:
     ) -> dict:
         report_currency = normalize_report_currency(display_currency)
         portfolio_filter = normalize_portfolio_filter(portfolio)
+        trades_by_portfolio: dict[str, list[Trade]] = {}
+        dividends_by_portfolio: dict[str, list[Dividend]] = {}
+        for trade in trades:
+            trades_by_portfolio.setdefault(trade.portfolio, []).append(trade)
+        for dividend in dividends:
+            dividends_by_portfolio.setdefault(dividend.portfolio, []).append(dividend)
+
         overall = self.summary(trades, dividends, as_of, display_currency=report_currency)
-        selected = (
-            self.summary(trades, dividends, as_of, portfolio=portfolio_filter, display_currency=report_currency)
-            if portfolio_filter
-            else overall
-        )
-        portfolios = []
-        for portfolio_name in portfolio_names(trades, dividends):
-            summary = self.summary(trades, dividends, as_of, portfolio=portfolio_name, display_currency=report_currency)
-            portfolios.append(
-                {
-                    "portfolio": portfolio_name,
-                    "market_value": summary["market_value"],
-                    "total_gain": summary["total_gain"],
-                    "dividends": summary["dividends"],
-                    "positions": summary["positions"],
-                }
+        summaries = {
+            name: self.summary(
+                trades_by_portfolio.get(name, []),
+                dividends_by_portfolio.get(name, []),
+                as_of,
+                portfolio=name,
+                display_currency=report_currency,
             )
+            for name in portfolio_names(trades, dividends)
+        }
+        if portfolio_filter:
+            selected = summaries.get(portfolio_filter) or self.summary(
+                [], [], as_of, portfolio=portfolio_filter, display_currency=report_currency
+            )
+        else:
+            selected = overall
+        portfolios = [
+            {
+                "portfolio": name,
+                "market_value": summary["market_value"],
+                "total_gain": summary["total_gain"],
+                "dividends": summary["dividends"],
+                "positions": summary["positions"],
+            }
+            for name, summary in summaries.items()
+        ]
         return {
             "as_of": as_of.isoformat(),
             "portfolio": portfolio_filter or "All",
@@ -384,7 +444,11 @@ class PortfolioAnalytics:
         return min(dates) if dates else default
 
     def _latest_price(self, symbol: str, start: date, as_of: date) -> tuple[float | None, str]:
-        price_map = self.price_provider.get_prices(symbol, start, as_of)
+        memo_key = (symbol, start, as_of)
+        price_map = self._price_memo.get(memo_key)
+        if price_map is None:
+            price_map = self.price_provider.get_prices(symbol, start, as_of)
+            self._price_memo[memo_key] = price_map
         candidates = [item_date for item_date in price_map if item_date <= as_of]
         if not candidates:
             return None, "missing"
@@ -413,15 +477,24 @@ class PortfolioAnalytics:
         target = normalize_currency(to_currency)
         if source == target:
             return 1.0
+        memo_key = (source, target, as_of)
+        cached = self._fx_memo.get(memo_key)
+        if cached is None:
+            cached = self._fetch_fx_rate(source, target, as_of)
+            self._fx_memo[memo_key] = cached
+        rate, warning = cached
+        if warning and warning not in warnings:
+            warnings.append(warning)
+        return rate
+
+    def _fetch_fx_rate(self, source: str, target: str, as_of: date) -> tuple[float, str | None]:
         get_fx_rate = getattr(self.price_provider, "get_fx_rate", None)
         if get_fx_rate is None:
-            warnings.append(f"{source}/{target}: no FX provider available; using 1.0.")
-            return 1.0
+            return 1.0, f"{source}/{target}: no FX provider available; using 1.0."
         try:
-            return float(get_fx_rate(source, target, as_of))
+            return float(get_fx_rate(source, target, as_of)), None
         except Exception:
-            warnings.append(f"{source}/{target}: no FX rate available on {as_of.isoformat()}; using 1.0.")
-            return 1.0
+            return 1.0, f"{source}/{target}: no FX rate available on {as_of.isoformat()}; using 1.0."
 
 
 def date_points(start: date, end: date, interval: str) -> list[date]:
@@ -516,10 +589,11 @@ def performance_cache_key(
     interval: str,
     portfolio: str | None,
     display_currency: str,
+    cache_token: str | None = None,
 ) -> str:
-    payload = {
+    payload: dict = {
         "kind": "performance",
-        "version": 2,
+        "version": 3,
         "params": {
             "start": start.isoformat(),
             "end": end.isoformat(),
@@ -527,8 +601,59 @@ def performance_cache_key(
             "portfolio": normalize_portfolio_filter(portfolio) or "All",
             "currency": normalize_report_currency(display_currency),
         },
-        "trades": [trade.to_json() for trade in sorted(trades, key=lambda item: item.id)],
-        "dividends": [dividend.to_json() for dividend in sorted(dividends, key=lambda item: item.id)],
     }
+    if cache_token is not None:
+        payload["token"] = cache_token
+    else:
+        payload["trades"] = [trade.to_json() for trade in sorted(trades, key=lambda item: item.id)]
+        payload["dividends"] = [dividend.to_json() for dividend in sorted(dividends, key=lambda item: item.id)]
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
+
+
+def xirr(flows: list[tuple[date, float]]) -> float | None:
+    """Annualized money-weighted return (actual/365), solved by bisection.
+
+    Returns None when the rate is undefined: fewer than two flows, all flows
+    on one day, same-signed flows, or no sign change in (-0.9999, 10.0).
+    """
+    if len(flows) < 2:
+        return None
+    if not any(amount > 0 for _, amount in flows) or not any(amount < 0 for _, amount in flows):
+        return None
+    first_date = min(flow_date for flow_date, _ in flows)
+    years = [(flow_date - first_date).days / 365.0 for flow_date, _ in flows]
+    amounts = [amount for _, amount in flows]
+    if max(years) <= 0:
+        return None
+
+    def npv(rate: float) -> float:
+        return sum(amount / (1.0 + rate) ** year for amount, year in zip(amounts, years))
+
+    low, high = -0.9999, 10.0
+    npv_low = npv(low)
+    if npv_low * npv(high) > 0:
+        return None
+    for _ in range(100):
+        mid = (low + high) / 2
+        value = npv(mid)
+        if abs(value) < 1e-9:
+            return mid
+        if npv_low * value < 0:
+            high = mid
+        else:
+            low, npv_low = mid, value
+    return (low + high) / 2
+
+
+def max_drawdown_pct(points: list[dict]) -> float:
+    """Largest peak-to-trough decline of the cumulative return index (1 + return_pct)."""
+    peak: float | None = None
+    drawdown = 0.0
+    for point in points:
+        index_value = 1.0 + point["return_pct"]
+        if peak is None or index_value > peak:
+            peak = index_value
+        if peak > 0:
+            drawdown = max(drawdown, 1.0 - index_value / peak)
+    return round_number(drawdown)

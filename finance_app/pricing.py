@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import re
+import threading
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +19,11 @@ class YahooFinanceProvider:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.timeout = timeout
+        # Parsed price files keyed by (mtime_ns, size); the provider is shared
+        # across request threads, so access goes through a lock.
+        self._file_cache: OrderedDict[Path, tuple[int, int, dict[date, float]]] = OrderedDict()
+        self._file_cache_lock = threading.Lock()
+        self._file_cache_max = 256
 
     def get_prices(self, symbol: str, start: date, end: date) -> dict[date, float]:
         if end < start:
@@ -123,9 +130,32 @@ class YahooFinanceProvider:
         return prices
 
     def _read_cache_file(self, path: Path) -> dict[date, float]:
-        if not path.exists():
+        try:
+            stat = path.stat()
+        except OSError:
             return {}
-        with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        signature = (stat.st_mtime_ns, stat.st_size)
+        with self._file_cache_lock:
+            entry = self._file_cache.get(path)
+            if entry is not None and (entry[0], entry[1]) == signature:
+                self._file_cache.move_to_end(path)
+                # Copy: callers (_write_cache) mutate the returned dict.
+                return dict(entry[2])
+        prices = self._parse_cache_file(path)
+        with self._file_cache_lock:
+            self._file_cache[path] = (signature[0], signature[1], prices)
+            self._file_cache.move_to_end(path)
+            while len(self._file_cache) > self._file_cache_max:
+                self._file_cache.popitem(last=False)
+        return dict(prices)
+
+    @staticmethod
+    def _parse_cache_file(path: Path) -> dict[date, float]:
+        try:
+            handle = path.open("r", newline="", encoding="utf-8-sig")
+        except OSError:
+            return {}
+        with handle:
             reader = csv.DictReader(handle)
             prices = {}
             for row in reader:

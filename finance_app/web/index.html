@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>股票績效與配息追蹤</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260608-precision-date" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260611-perf-metrics" />
   </head>
   <body>
     <header class="app-header">
@@ -193,6 +193,7 @@
               備註
               <input name="notes" type="text" />
             </label>
+            <p class="form-error" hidden></p>
             <button class="primary" type="submit">新增交易</button>
           </form>
 
@@ -232,6 +233,7 @@
               備註
               <input name="notes" type="text" />
             </label>
+            <p class="form-error" hidden></p>
             <button class="primary" type="submit">新增配息</button>
           </form>
 
@@ -274,6 +276,6 @@
     </main>
 
     <script src="/static/vendor/chart.umd.min.js"></script>
-    <script src="/static/app.js?v=20260608-precision-date"></script>
+    <script src="/static/app.js?v=20260611-perf-metrics"></script>
   </body>
 </html>

@@ -142,6 +142,71 @@ class SQLiteStoreTests(unittest.TestCase):
             self.assertTrue(store.price_cache_dir.exists())
             self.assertTrue(store.result_cache_dir.exists())
 
+    def test_delete_rejects_unknown_table(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStore(temp_dir)
+            with self.assertRaises(ValueError):
+                store._delete_by_id("metadata", "any-id")
+
+    def test_data_version_increments_on_writes_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStore(temp_dir)
+            self.assertEqual(store.data_version(), 0)
+
+            trade = store.add_trade(Trade("", date(2024, 1, 2), "MSFT", "BUY", 2, 200, 0, ""))
+            self.assertEqual(store.data_version(), 1)
+
+            store.update_trade(trade.id, Trade("", date(2024, 1, 3), "MSFT", "BUY", 2, 210, 0, ""))
+            self.assertEqual(store.data_version(), 2)
+
+            store.update_trade("missing", Trade("", date(2024, 1, 3), "MSFT", "BUY", 2, 210, 0, ""))
+            self.assertEqual(store.data_version(), 2)
+
+            store.delete_trade(trade.id)
+            self.assertEqual(store.data_version(), 3)
+
+            store.delete_trade(trade.id)
+            self.assertEqual(store.data_version(), 3)
+
+    def test_portfolio_names_queries_distinct_values(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStore(temp_dir)
+            store.add_trade(Trade("", date(2024, 1, 2), "GOOG", "BUY", 1, 100, 0, "", "Active"))
+            store.add_trade(Trade("", date(2024, 1, 3), "GOOG", "BUY", 1, 100, 0, "", "Active"))
+            store.add_dividend(Dividend("", date(2024, 2, 1), "GOOG", 3, 0, "", "DCA"))
+
+            self.assertEqual(store.portfolio_names(), ["Active", "DCA"])
+
+    def test_query_records_filters_paginates_and_clamps(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStore(temp_dir)
+            store.add_trade(Trade("", date(2024, 1, 2), "GOOG", "BUY", 1, 100, 0, "", "Active"))
+            store.add_trade(Trade("", date(2024, 2, 2), "MSFT", "BUY", 1, 50, 0, "", "DCA"))
+            store.add_dividend(Dividend("", date(2024, 3, 1), "GOOG", 3, 0, "", "Active"))
+
+            rows, total, page = store.query_records()
+            self.assertEqual(total, 3)
+            self.assertEqual(page, 1)
+            self.assertEqual([row["date"] for row in rows], ["2024-03-01", "2024-02-02", "2024-01-02"])
+
+            rows, total, _page = store.query_records(kind="dividend")
+            self.assertEqual(total, 1)
+            self.assertEqual(rows[0]["kind"], "dividend")
+
+            rows, total, _page = store.query_records(symbol_contains="goo")
+            self.assertEqual(total, 2)
+
+            rows, total, _page = store.query_records(portfolio="DCA")
+            self.assertEqual(total, 1)
+            self.assertEqual(rows[0]["symbol"], "MSFT")
+
+            rows, total, _page = store.query_records(start="2024-02-02", end="2024-03-01")
+            self.assertEqual(total, 2)
+
+            rows, _total, page = store.query_records(page=99, page_size=2)
+            self.assertEqual(page, 2)
+            self.assertEqual(len(rows), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

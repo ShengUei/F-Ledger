@@ -24,6 +24,36 @@ class YahooFinanceProviderCacheTests(unittest.TestCase):
             self.assertEqual(prices[date(2023, 12, 29)], 100)
             self.assertEqual(prices[date(2024, 1, 2)], 110)
 
+    def test_file_cache_invalidated_when_file_rewritten(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            provider = YahooFinanceProvider(temp_dir)
+            provider._write_cache("GOOG", {date(2024, 1, 2): 110})
+            first = provider.get_prices("GOOG", date(2024, 1, 2), date(2024, 1, 2))
+            self.assertEqual(first[date(2024, 1, 2)], 110)
+
+            provider._write_cache("GOOG", {date(2024, 1, 2): 120.5})
+            second = provider.get_prices("GOOG", date(2024, 1, 2), date(2024, 1, 2))
+            self.assertEqual(second[date(2024, 1, 2)], 120.5)
+
+    def test_file_cache_returns_copies_so_write_merges_stay_clean(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            provider = YahooFinanceProvider(temp_dir)
+            provider._write_cache("GOOG", {date(2024, 1, 2): 110})
+            path = provider._year_cache_path("GOOG", 2024)
+
+            first = provider._read_cache_file(path)
+            first[date(2024, 1, 3)] = 999.0
+            second = provider._read_cache_file(path)
+            self.assertNotIn(date(2024, 1, 3), second)
+
+            # Merge-write on a warm cache must keep prior rows intact.
+            # Keep the query range ending at the cached date so no Yahoo fetch triggers.
+            provider._write_cache("GOOG", {date(2024, 1, 5): 130})
+            prices = provider.get_prices("GOOG", date(2024, 1, 2), date(2024, 1, 5))
+            self.assertEqual(prices[date(2024, 1, 2)], 110)
+            self.assertEqual(prices[date(2024, 1, 5)], 130)
+            self.assertNotIn(date(2024, 1, 3), prices)
+
     def test_legacy_flat_price_cache_is_migrated_to_year_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_dir = Path(temp_dir)

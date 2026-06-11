@@ -309,6 +309,7 @@ function setupRecordsPage() {
             備註
             <input name="notes" type="text" />
           </label>
+          <p class="form-error" hidden></p>
           <div class="form-actions">
             <button class="primary" type="submit">儲存修改</button>
             <button class="secondary" id="cancelRecordEditButton" type="button">取消</button>
@@ -345,7 +346,7 @@ function bindEvents() {
     button.addEventListener("click", () => switchView(button.dataset.viewTab));
   });
   ["asOfInput", "startInput", "endInput", "portfolioFilter", "currencyFilter"].forEach((id) => {
-    byId(id).addEventListener("change", refreshAll);
+    byId(id).addEventListener("change", refreshData);
   });
 
   ["performanceXAxisMode", "performanceYAxisMode", "annualXAxisMode", "annualYAxisMode"].forEach((id) => {
@@ -412,20 +413,33 @@ function bindEvents() {
 }
 
 async function refreshAll() {
+  await runRefresh(async () => {
+    await refreshPortfolios();
+    await refreshDashboardData();
+  });
+}
+
+async function refreshData() {
+  await runRefresh(refreshDashboardData);
+}
+
+async function runRefresh(task) {
   setStatus("更新中");
   try {
-    await refreshPortfolios();
-    await refreshSummary();
-    const tasks = [refreshPerformance(), refreshAllocation()];
-    if (state.recordsVisible) {
-      tasks.push(refreshRecords());
-    }
-    await Promise.all(tasks);
+    await task();
     const warnings = state.summary?.warnings || [];
     setStatus(warnings.length ? warnings.join(" ") : "已更新");
   } catch (error) {
     setStatus(error.message || "更新失敗");
   }
+}
+
+async function refreshDashboardData() {
+  const tasks = [refreshSummary().then(refreshAllocation), refreshPerformance()];
+  if (state.recordsVisible) {
+    tasks.push(refreshRecords());
+  }
+  await Promise.all(tasks);
 }
 
 async function refreshPortfolios() {
@@ -482,17 +496,24 @@ async function refreshAllocation() {
 async function submitTrade(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  setFormError(form, "");
   let payload;
   try {
     payload = formPayloadWithPortfolio(form);
   } catch (error) {
+    setFormError(form, error.message);
     setStatus(error.message);
     return;
   }
   payload.quantity = Number(payload.quantity);
   payload.price = Number(payload.price);
   payload.fees = Number(payload.fees || 0);
-  await apiPost("/api/trades", payload);
+  try {
+    await apiPost("/api/trades", payload);
+  } catch (error) {
+    setFormError(form, error.message || "新增交易失敗");
+    return;
+  }
   resetRecordForm(form);
   await refreshAll();
 }
@@ -500,16 +521,23 @@ async function submitTrade(event) {
 async function submitDividend(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  setFormError(form, "");
   let payload;
   try {
     payload = formPayloadWithPortfolio(form);
   } catch (error) {
+    setFormError(form, error.message);
     setStatus(error.message);
     return;
   }
   payload.gross_amount = Number(payload.gross_amount);
   payload.tax = Number(payload.tax || 0);
-  await apiPost("/api/dividends", payload);
+  try {
+    await apiPost("/api/dividends", payload);
+  } catch (error) {
+    setFormError(form, error.message || "新增配息失敗");
+    return;
+  }
   resetRecordForm(form);
   await refreshAll();
 }
@@ -517,12 +545,14 @@ async function submitDividend(event) {
 async function submitRecordEdit(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  setFormError(form, "");
   const kind = form.elements.kind.value;
   const id = form.elements.id.value;
   let payload;
   try {
     payload = formPayloadWithPortfolio(form);
   } catch (error) {
+    setFormError(form, error.message);
     setStatus(error.message);
     return;
   }
@@ -543,12 +573,22 @@ async function submitRecordEdit(event) {
     delete payload.price;
     delete payload.fees;
   }
-  await apiPut(path, payload);
+  try {
+    await apiPut(path, payload);
+  } catch (error) {
+    setFormError(form, error.message || "儲存修改失敗");
+    return;
+  }
   cancelRecordEdit();
   await refreshAll();
 }
 
 async function deleteRecord(kind, id) {
+  const record = (state.records.records || []).find((item) => item.kind === kind && item.id === id);
+  const label = record ? `${record.date} ${record.symbol} ${recordTypeLabel(record)}` : "這筆紀錄";
+  if (!window.confirm(`確定要刪除 ${label}？`)) {
+    return;
+  }
   if (state.editingRecord?.kind === kind && state.editingRecord?.id === id) {
     cancelRecordEdit();
   }
@@ -592,7 +632,7 @@ async function importTradesFromFile() {
     setImportStatus(`準備匯入 ${records.length} 筆交易`);
     const payload = await apiPost("/api/import/trades", { records });
     fileInput.value = "";
-    setImportStatus(`已匯入 ${payload.imported_count} 筆交易`);
+    setImportStatus(importResultText("交易", payload));
     await refreshAll();
   } catch (error) {
     setImportStatus(error.message || "匯入失敗");
@@ -614,7 +654,7 @@ async function importDividendsFromFile() {
     setImportStatus(`準備匯入 ${records.length} 筆配息`);
     const payload = await apiPost("/api/import/dividends", { records });
     fileInput.value = "";
-    setImportStatus(`已匯入 ${payload.imported_count} 筆配息`);
+    setImportStatus(importResultText("配息", payload));
     await refreshAll();
   } catch (error) {
     setImportStatus(error.message || "配息匯入失敗");
@@ -631,6 +671,12 @@ function renderSummary() {
     metric("已實現", signedMoney(summary.realized_gain, currency), `區間已實現 · ${currency}`, summary.realized_gain),
     metric("賣出損益", signedMoney(summary.sell_gain, currency), `區間賣出 · ${currency}`, summary.sell_gain),
     metric("累計配息", money(summary.dividends, currency), `區間稅後 · ${currency}`, summary.dividends),
+    metric(
+      "年化報酬率",
+      summary.annualized_return_pct == null ? "—" : pct(summary.annualized_return_pct),
+      "XIRR · 區間",
+      summary.annualized_return_pct,
+    ),
   ].join("");
 
   const rows = summary.positions || [];
@@ -801,6 +847,7 @@ function cancelRecordEdit() {
   if (form) {
     form.reset();
     syncNewPortfolioField(form);
+    setFormError(form, "");
   }
   if (panel) {
     panel.classList.add("hidden");
@@ -910,6 +957,12 @@ function renderPerformance() {
   const annualConfig = annualChartConfig();
   renderLegend("performanceLegend", performanceConfig.series.map((item) => [item.label, item.color]));
   renderLegend("annualLegend", annualConfig.series.map((item) => [item.label, item.color]));
+  if (state.performance.max_drawdown_pct != null) {
+    byId("performanceLegend").insertAdjacentHTML(
+      "beforeend",
+      `<span class="legend-item">最大回撤 ${pct(state.performance.max_drawdown_pct)}</span>`,
+    );
+  }
 
   drawLineChart(byId("performanceChart"), state.performance.points || [], performanceConfig.series, {
     xMode: byId("performanceXAxisMode").value,
@@ -1139,6 +1192,21 @@ function downloadTextFile(filename, content) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function setFormError(form, message) {
+  const element = form.querySelector(".form-error");
+  if (!element) {
+    return;
+  }
+  element.textContent = message || "";
+  element.hidden = !message;
+}
+
+function importResultText(label, payload) {
+  const skipped = payload.skipped_duplicates || 0;
+  const base = `已匯入 ${payload.imported_count} 筆${label}`;
+  return skipped ? `${base}，略過 ${skipped} 筆重複` : base;
 }
 
 function setImportStatus(message) {

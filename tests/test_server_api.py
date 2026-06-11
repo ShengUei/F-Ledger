@@ -413,6 +413,179 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(payload["records"][0]["quantity"], 1)
             self.assertEqual(payload["records"][0]["price"], 100)
 
+    def test_trade_import_skips_duplicates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
+            records = [
+                {
+                    "date": "2024-01-02",
+                    "symbol": "GOOG",
+                    "side": "BUY",
+                    "quantity": "10",
+                    "price": "100",
+                    "fees": "1",
+                    "currency": "USD",
+                    "portfolio": "Active",
+                },
+                {
+                    "date": "2024-01-03",
+                    "symbol": "MSFT",
+                    "side": "BUY",
+                    "quantity": "5",
+                    "price": "50",
+                    "fees": "0",
+                    "currency": "USD",
+                    "portfolio": "Active",
+                },
+            ]
+            body = json.dumps({"records": records}).encode("utf-8")
+
+            status, payload = handle_api_request(context, "POST", "/api/import/trades", {}, body)
+            self.assertEqual(status, 201)
+            self.assertEqual(payload["imported_count"], 2)
+            self.assertEqual(payload["skipped_duplicates"], 0)
+
+            status, payload = handle_api_request(context, "POST", "/api/import/trades", {}, body)
+            self.assertEqual(status, 201)
+            self.assertEqual(payload["imported_count"], 0)
+            self.assertEqual(payload["skipped_duplicates"], 2)
+            self.assertEqual(len(context.store.list_trades()), 2)
+
+            duplicated_batch = json.dumps({"records": [records[0], records[0]]}).encode("utf-8")
+            status, payload = handle_api_request(context, "POST", "/api/import/trades", {}, duplicated_batch)
+            self.assertEqual(payload["imported_count"], 0)
+            self.assertEqual(payload["skipped_duplicates"], 2)
+
+    def test_dividend_import_skips_duplicates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
+            record = {
+                "date": "2024-02-01",
+                "symbol": "GOOG",
+                "gross_amount": "10",
+                "tax": "3",
+                "currency": "USD",
+                "portfolio": "Active",
+            }
+            body = json.dumps({"records": [record, record]}).encode("utf-8")
+
+            status, payload = handle_api_request(context, "POST", "/api/import/dividends", {}, body)
+            self.assertEqual(status, 201)
+            self.assertEqual(payload["imported_count"], 1)
+            self.assertEqual(payload["skipped_duplicates"], 1)
+            self.assertEqual(len(context.store.list_dividends()), 1)
+
+    def test_performance_cache_uses_data_version_token(self):
+        from finance_app.cache import JSONResultCache
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteStore(temp_dir)
+            context = AppContext(
+                store,
+                FixedPriceProvider({"GOOG": {date(2024, 1, 31): 110.0}}),
+                result_cache=JSONResultCache(store.result_cache_dir),
+            )
+            handle_api_request(
+                context,
+                "POST",
+                "/api/trades",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-01-02",
+                        "symbol": "GOOG",
+                        "side": "BUY",
+                        "quantity": 1,
+                        "price": 100,
+                        "currency": "TWD",
+                        "portfolio": "Active",
+                    }
+                ).encode("utf-8"),
+            )
+            query = {"start": ["2024-01-01"], "end": ["2024-01-31"], "interval": ["monthly"]}
+
+            _status, first = handle_api_request(context, "GET", "/api/performance", query, b"")
+            _status, second = handle_api_request(context, "GET", "/api/performance", query, b"")
+            self.assertFalse(first["cache"]["hit"])
+            self.assertTrue(second["cache"]["hit"])
+            self.assertEqual(first["cache"]["key"], second["cache"]["key"])
+
+            handle_api_request(
+                context,
+                "POST",
+                "/api/trades",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-01-10",
+                        "symbol": "GOOG",
+                        "side": "BUY",
+                        "quantity": 1,
+                        "price": 105,
+                        "currency": "TWD",
+                        "portfolio": "Active",
+                    }
+                ).encode("utf-8"),
+            )
+
+            _status, third = handle_api_request(context, "GET", "/api/performance", query, b"")
+            self.assertFalse(third["cache"]["hit"])
+            self.assertNotEqual(first["cache"]["key"], third["cache"]["key"])
+
+    def test_records_sql_path_matches_in_memory_payload(self):
+        from finance_app.server import _records_payload
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
+            for symbol in ["GOOG", "MSFT", "AAPL"]:
+                handle_api_request(
+                    context,
+                    "POST",
+                    "/api/trades",
+                    {},
+                    json.dumps(
+                        {
+                            "date": "2024-01-02",
+                            "symbol": symbol,
+                            "side": "BUY",
+                            "quantity": 1,
+                            "price": 100,
+                            "portfolio": "Active",
+                            "currency": "USD",
+                        }
+                    ).encode("utf-8"),
+                )
+            handle_api_request(
+                context,
+                "POST",
+                "/api/dividends",
+                {},
+                json.dumps(
+                    {
+                        "date": "2024-01-02",
+                        "symbol": "GOOG",
+                        "gross_amount": 10,
+                        "tax": 0,
+                        "portfolio": "Active",
+                        "currency": "USD",
+                    }
+                ).encode("utf-8"),
+            )
+
+            for query in [
+                {},
+                {"kind": ["dividend"]},
+                {"symbol": ["goo"]},
+                {"start": ["2024-01-02"], "end": ["2024-01-02"]},
+                {"page": ["99"], "page_size": ["2"]},
+                {"page_size": ["500"]},
+            ]:
+                _status, sql_payload = handle_api_request(context, "GET", "/api/records", dict(query), b"")
+                expected = _records_payload(
+                    context.store.list_trades(), context.store.list_dividends(), dict(query)
+                )
+                self.assertEqual(sql_payload, expected, msg=f"query={query}")
+
     def test_update_trade_and_dividend_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
