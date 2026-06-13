@@ -153,10 +153,35 @@ class PortfolioAnalytics:
         report_currency = normalize_report_currency(display_currency)
         portfolio_filter = normalize_portfolio_filter(portfolio)
         filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
-        period_trades, period_dividends = filter_records_by_date(filtered_trades, filtered_dividends, start, end)
-        ending = self.summary(period_trades, period_dividends, end, display_currency=report_currency)
+        # Carry positions opened before `start` forward, then rebase the period figures
+        # against an opening baseline (the day before `start`). When `start` is on or
+        # before the first activity the baseline is empty, so every delta below collapses
+        # to the cumulative figure and this matches the all-time view.
+        ending = self.summary(filtered_trades, filtered_dividends, end, display_currency=report_currency)
+        baseline = self._baseline_summary(filtered_trades, filtered_dividends, start, report_currency)
+        base_market_value = baseline["market_value"] if baseline else 0.0
+        base_buy_cost = baseline["buy_cost"] if baseline else 0.0
+
+        market_value_change = ending["market_value"] - base_market_value
+        buy_cost = ending["buy_cost"] - base_buy_cost
+        sell_proceeds = ending["sell_proceeds"] - (baseline["sell_proceeds"] if baseline else 0.0)
+        cash_flow = ending["cash_flow"] - (baseline["cash_flow"] if baseline else 0.0)
+        realized_gain = ending["realized_gain"] - (baseline["realized_gain"] if baseline else 0.0)
+        dividends_total = ending["dividends"] - (baseline["dividends"] if baseline else 0.0)
+        total_gain = ending["total_gain"] - (baseline["total_gain"] if baseline else 0.0)
+        # Return on the capital at risk during the window: opening value plus new buys.
+        return_base = base_market_value + buy_cost
+        if return_base <= 1e-9:
+            return_base = ending["buy_cost"]
+        return_pct = total_gain / return_base if return_base else 0.0
         annualized = self._annualized_return(
-            period_trades, period_dividends, end, ending["market_value"], report_currency
+            filtered_trades,
+            filtered_dividends,
+            start,
+            end,
+            ending["market_value"],
+            base_market_value,
+            report_currency,
         )
 
         return {
@@ -166,31 +191,78 @@ class PortfolioAnalytics:
             "portfolio": portfolio_filter or "All",
             "currency": report_currency,
             "market_value": ending["market_value"],
-            "market_value_change": ending["market_value"],
-            "buy_cost": ending["buy_cost"],
-            "sell_proceeds": ending["sell_proceeds"],
-            "cash_flow": ending["cash_flow"],
-            "realized_gain": ending["realized_gain"],
-            "sell_gain": ending["realized_gain"],
-            "dividends": ending["dividends"],
-            "total_gain": ending["total_gain"],
-            "return_pct": ending["return_pct"],
+            "market_value_change": round_money(market_value_change),
+            "buy_cost": round_money(buy_cost),
+            "sell_proceeds": round_money(sell_proceeds),
+            "cash_flow": round_money(cash_flow),
+            "realized_gain": round_money(realized_gain),
+            "sell_gain": round_money(realized_gain),
+            "dividends": round_money(dividends_total),
+            "total_gain": round_money(total_gain),
+            "return_pct": round_number(return_pct),
             "annualized_return_pct": annualized,
             "positions": ending["positions"],
             "warnings": ending["warnings"],
+        }
+
+    def overview(
+        self,
+        trades: list[Trade],
+        dividends: list[Dividend],
+        as_of: date,
+        portfolio: str | None = None,
+        display_currency: str = DEFAULT_DISPLAY_CURRENCY,
+    ) -> dict:
+        """Trader-style headline KPIs over fixed periods, independent of any range filter.
+
+        Total return / market value / dividends / annualized return are measured from the
+        first activity to `as_of`; YTD and realized figures cover the current calendar year.
+        Both periods respect the portfolio filter.
+        """
+        report_currency = normalize_report_currency(display_currency)
+        portfolio_filter = normalize_portfolio_filter(portfolio)
+        filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
+        inception = self._first_activity_date(filtered_trades, filtered_dividends, as_of)
+        all_time = self.period_summary(
+            trades, dividends, inception, as_of, portfolio=portfolio, display_currency=report_currency
+        )
+        year_start = min(date(as_of.year, 1, 1), as_of)
+        ytd = self.period_summary(
+            trades, dividends, year_start, as_of, portfolio=portfolio, display_currency=report_currency
+        )
+        return {
+            "as_of": as_of.isoformat(),
+            "portfolio": portfolio_filter or "All",
+            "currency": report_currency,
+            "year": as_of.year,
+            "total_return_pct": all_time["return_pct"],
+            "total_gain": all_time["total_gain"],
+            "market_value": all_time["market_value"],
+            "dividends": all_time["dividends"],
+            "annualized_return_pct": all_time["annualized_return_pct"],
+            "ytd_gain": ytd["total_gain"],
+            "ytd_return_pct": ytd["return_pct"],
+            "ytd_realized_gain": ytd["realized_gain"],
         }
 
     def _annualized_return(
         self,
         trades: list[Trade],
         dividends: list[Dividend],
+        start: date,
         end: date,
         ending_market_value: float,
+        opening_market_value: float,
         report_currency: str,
     ) -> float | None:
         discard: list[str] = []
         flows: list[tuple[date, float]] = []
+        # Treat the value carried into the window as capital invested at `start`.
+        if opening_market_value:
+            flows.append((start, -opening_market_value))
         for trade in trades:
+            if not (start <= trade.date <= end):
+                continue
             if trade.side == "BUY":
                 amount = -(trade.quantity * trade.price + trade.fees)
             else:
@@ -198,6 +270,8 @@ class PortfolioAnalytics:
             display_amount = self._convert(amount, trade.currency, report_currency, trade.date, discard)
             flows.append((trade.date, display_amount))
         for dividend in dividends:
+            if not (start <= dividend.date <= end):
+                continue
             display_amount = self._convert(
                 dividend.net_amount, dividend.currency, report_currency, dividend.date, discard
             )
@@ -231,14 +305,17 @@ class PortfolioAnalytics:
 
         portfolio_filter = normalize_portfolio_filter(portfolio)
         filtered_trades, filtered_dividends = filter_records(trades, dividends, portfolio_filter)
-        period_trades, period_dividends = filter_records_by_date(filtered_trades, filtered_dividends, start, end)
+        # Positions opened before `start` are carried forward; each point's cumulative
+        # figures are then rebased against the opening baseline (day before `start`).
+        baseline = self._baseline_summary(filtered_trades, filtered_dividends, start, report_currency)
         points = [
-            self._point_from_summary(
-                self.summary(period_trades, period_dividends, point, display_currency=report_currency)
+            self._point_from_period(
+                self.summary(filtered_trades, filtered_dividends, point, display_currency=report_currency),
+                baseline,
             )
             for point in date_points(start, end, interval)
         ]
-        annual = self._annual_points(period_trades, period_dividends, start, end, None, report_currency)
+        annual = self._annual_points(filtered_trades, filtered_dividends, start, end, None, report_currency)
         result = {
             "portfolio": portfolio_filter or "All",
             "currency": report_currency,
@@ -366,16 +443,44 @@ class PortfolioAnalytics:
             )
         return rows
 
+    def _baseline_summary(
+        self,
+        trades: list[Trade],
+        dividends: list[Dividend],
+        start: date,
+        report_currency: str,
+    ) -> dict | None:
+        """Cumulative summary as of the day before `start` (the opening baseline).
+
+        Returns None when there is no day before `start` to value, which the callers
+        treat as an all-zero baseline (i.e. the all-time view).
+        """
+        baseline_day = start - timedelta(days=1)
+        if baseline_day < date(1900, 1, 1):
+            return None
+        return self.summary(trades, dividends, baseline_day, display_currency=report_currency)
+
     @staticmethod
-    def _point_from_summary(summary: dict) -> dict:
+    def _point_from_period(summary: dict, baseline: dict | None) -> dict:
+        base_total_gain = baseline["total_gain"] if baseline else 0.0
+        base_dividends = baseline["dividends"] if baseline else 0.0
+        base_realized = baseline["realized_gain"] if baseline else 0.0
+        base_cash_flow = baseline["cash_flow"] if baseline else 0.0
+        base_market_value = baseline["market_value"] if baseline else 0.0
+        base_buy_cost = baseline["buy_cost"] if baseline else 0.0
+        total_gain = summary["total_gain"] - base_total_gain
+        return_base = base_market_value + (summary["buy_cost"] - base_buy_cost)
+        if return_base <= 1e-9:
+            return_base = summary["buy_cost"]
+        return_pct = total_gain / return_base if return_base else 0.0
         return {
             "date": summary["as_of"],
             "market_value": summary["market_value"],
-            "total_gain": summary["total_gain"],
-            "dividends": summary["dividends"],
-            "realized_gain": summary["realized_gain"],
-            "cash_flow": summary["cash_flow"],
-            "return_pct": summary["return_pct"],
+            "total_gain": round_money(total_gain),
+            "dividends": round_money(summary["dividends"] - base_dividends),
+            "realized_gain": round_money(summary["realized_gain"] - base_realized),
+            "cash_flow": round_money(summary["cash_flow"] - base_cash_flow),
+            "return_pct": round_number(return_pct),
         }
 
     def _build_positions(
@@ -565,18 +670,6 @@ def filter_records(
     )
 
 
-def filter_records_by_date(
-    trades: list[Trade],
-    dividends: list[Dividend],
-    start: date,
-    end: date,
-) -> tuple[list[Trade], list[Dividend]]:
-    return (
-        [trade for trade in trades if start <= trade.date <= end],
-        [dividend for dividend in dividends if start <= dividend.date <= end],
-    )
-
-
 def portfolio_names(trades: list[Trade], dividends: list[Dividend]) -> list[str]:
     return sorted({trade.portfolio for trade in trades} | {dividend.portfolio for dividend in dividends})
 
@@ -593,7 +686,7 @@ def performance_cache_key(
 ) -> str:
     payload: dict = {
         "kind": "performance",
-        "version": 3,
+        "version": 4,
         "params": {
             "start": start.isoformat(),
             "end": end.isoformat(),

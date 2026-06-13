@@ -131,47 +131,46 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         self.assertEqual([position["symbol"] for position in active_result["selected"]["positions"]], ["GOOG", "MSFT"])
         self.assertAlmostEqual(active_result["selected"]["positions"][0]["allocation_pct"], 1200 / 1700, places=6)
 
-    def test_period_summary_uses_only_records_in_selected_date_range(self):
+    def test_period_summary_carries_forward_opening_positions_and_rebases(self):
+        # A position opened before the window must stay in the holdings (market value /
+        # positions), while the gain/dividends/cost figures reflect only the window,
+        # rebased against the value carried in at the start (Model A / YTD).
         trades = [
-            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),
-            Trade("", date(2024, 6, 15), "AAPL", "BUY", 5, 20, 0, ""),
-            Trade("", date(2024, 7, 1), "AAPL", "SELL", 2, 30, 0, ""),
-            Trade("", date(2024, 10, 1), "MSFT", "BUY", 1, 100, 0, ""),
+            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),  # opened before window
+            Trade("", date(2025, 3, 1), "AAPL", "BUY", 10, 20, 0, ""),  # bought during window
         ]
         dividends = [
-            Dividend("", date(2024, 5, 1), "AAPL", 10, 0, ""),
-            Dividend("", date(2024, 8, 1), "AAPL", 20, 0, ""),
+            Dividend("", date(2025, 6, 1), "AAPL", 30, 0, ""),  # paid during window
         ]
         prices = {
             "AAPL": {
-                date(2024, 9, 30): 25,
-            },
-            "MSFT": {date(2024, 10, 31): 120},
+                date(2024, 12, 31): 15,  # opening baseline (day before window start)
+                date(2025, 12, 31): 25,  # window end
+            }
         }
 
         analytics = PortfolioAnalytics(FakePriceProvider(prices))
-        result = analytics.period_summary(trades, dividends, date(2024, 6, 1), date(2024, 9, 30))
+        result = analytics.period_summary(trades, dividends, date(2025, 1, 1), date(2025, 12, 31))
 
-        self.assertEqual(result["start"], "2024-06-01")
-        self.assertEqual(result["end"], "2024-09-30")
-        self.assertAlmostEqual(result["market_value"], 75.0, places=2)
-        self.assertAlmostEqual(result["market_value_change"], 75.0, places=2)
-        self.assertAlmostEqual(result["buy_cost"], 100.0, places=2)
-        self.assertAlmostEqual(result["sell_proceeds"], 60.0, places=2)
-        self.assertAlmostEqual(result["realized_gain"], 20.0, places=2)
-        self.assertAlmostEqual(result["sell_gain"], 20.0, places=2)
-        self.assertAlmostEqual(result["dividends"], 20.0, places=2)
-        self.assertAlmostEqual(result["total_gain"], 55.0, places=2)
+        # Carry-forward: the pre-window lot is still held at window end.
         self.assertEqual([position["symbol"] for position in result["positions"]], ["AAPL"])
-        self.assertAlmostEqual(result["positions"][0]["quantity"], 3.0, places=2)
+        self.assertAlmostEqual(result["positions"][0]["quantity"], 20.0, places=2)
+        self.assertAlmostEqual(result["market_value"], 500.0, places=2)
+        # Rebased to the window: only the window's buy, dividend and value change count.
+        self.assertAlmostEqual(result["buy_cost"], 200.0, places=2)
+        self.assertAlmostEqual(result["dividends"], 30.0, places=2)
+        self.assertAlmostEqual(result["market_value_change"], 350.0, places=2)
+        self.assertAlmostEqual(result["total_gain"], 180.0, places=2)
 
-    def test_performance_uses_only_records_in_selected_date_range(self):
+    def test_performance_carries_forward_prior_positions_and_rebases(self):
+        # OLD is bought the prior year and still held; the window view must include it
+        # (carry-forward) and rebase the gain to the start of the window.
         trades = [
             Trade("", date(2025, 6, 1), "OLD", "BUY", 2, 100, 0, ""),
             Trade("", date(2026, 1, 10), "NEW", "BUY", 1, 50, 0, ""),
         ]
         prices = {
-            "OLD": {date(2026, 1, 31): 200},
+            "OLD": {date(2025, 12, 31): 100, date(2026, 1, 31): 200},
             "NEW": {date(2026, 1, 31): 60},
         }
 
@@ -185,10 +184,60 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         )
 
         self.assertEqual([point["date"] for point in result["points"]], ["2026-01-31"])
-        self.assertAlmostEqual(result["points"][0]["market_value"], 60.0, places=2)
-        self.assertAlmostEqual(result["points"][0]["total_gain"], 10.0, places=2)
+        # OLD (2 * 200 = 400) is carried forward alongside NEW (1 * 60 = 60).
+        self.assertAlmostEqual(result["points"][0]["market_value"], 460.0, places=2)
+        # Gain rebased to the 2025-12-31 opening value (OLD flat at 100 -> only the
+        # January appreciation and the new buy contribute): (460 - 250) - 0 = 210.
+        self.assertAlmostEqual(result["points"][0]["total_gain"], 210.0, places=2)
         self.assertEqual([item["year"] for item in result["annual"]], [2026])
-        self.assertAlmostEqual(result["annual"][0]["ending_market_value"], 60.0, places=2)
+        self.assertAlmostEqual(result["annual"][0]["ending_market_value"], 460.0, places=2)
+
+    def test_performance_all_time_view_matches_cumulative_summary(self):
+        # When the window starts at the first activity ("全部"), the baseline is empty so
+        # rebasing is a no-op and the final point equals the cumulative summary.
+        trades = [
+            Trade("", date(2024, 3, 1), "AAPL", "BUY", 10, 10, 0, ""),
+            Trade("", date(2025, 2, 1), "AAPL", "BUY", 10, 20, 0, ""),
+        ]
+        prices = {"AAPL": {date(2024, 12, 31): 15, date(2025, 12, 31): 30}}
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.performance(
+            trades, [], start=date(2024, 3, 1), end=date(2025, 12, 31), interval="yearly"
+        )
+        cumulative = analytics.summary(trades, [], date(2025, 12, 31))
+
+        last_point = result["points"][-1]
+        self.assertEqual(last_point["date"], "2025-12-31")
+        self.assertAlmostEqual(last_point["market_value"], cumulative["market_value"], places=2)
+        self.assertAlmostEqual(last_point["total_gain"], cumulative["total_gain"], places=2)
+        self.assertAlmostEqual(last_point["return_pct"], cumulative["return_pct"], places=6)
+
+    def test_overview_reports_all_time_total_return_and_current_year_figures(self):
+        # Total return is all-time; YTD growth and realized P&L are the current calendar year.
+        trades = [
+            Trade("", date(2024, 1, 2), "AAPL", "BUY", 10, 10, 0, ""),  # opened a prior year
+            Trade("", date(2026, 3, 1), "AAPL", "SELL", 4, 30, 0, ""),  # realized this year
+        ]
+        prices = {
+            "AAPL": {
+                date(2025, 12, 31): 20,  # value carried into the current year
+                date(2026, 6, 1): 30,
+            }
+        }
+
+        analytics = PortfolioAnalytics(FakePriceProvider(prices))
+        result = analytics.overview(trades, [], date(2026, 6, 1))
+
+        self.assertEqual(result["year"], 2026)
+        # All-time: bought at 10, now worth 30 plus an 80 realized gain -> doubled cost.
+        self.assertAlmostEqual(result["total_return_pct"], 2.0, places=6)
+        self.assertAlmostEqual(result["total_gain"], 200.0, places=2)
+        self.assertAlmostEqual(result["market_value"], 180.0, places=2)
+        # YTD: only the move from the 2025-12-31 value (200) counts this year.
+        self.assertAlmostEqual(result["ytd_gain"], 100.0, places=2)
+        self.assertAlmostEqual(result["ytd_return_pct"], 0.5, places=6)
+        self.assertAlmostEqual(result["ytd_realized_gain"], 80.0, places=2)
 
     def test_summary_converts_us_and_taiwan_holdings_to_display_currency(self):
         trades = [

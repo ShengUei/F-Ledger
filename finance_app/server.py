@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import mimetypes
 from dataclasses import dataclass
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -23,6 +25,8 @@ DIVIDEND_IMPORT_TEMPLATE = (
 )
 
 DEFAULT_MARKET_SYMBOLS = ("^TWII", "SPY")
+LOG_DIR_NAME = "logs"
+LOG_FILE_NAME = "app.log"
 
 
 TRADE_IMPORT_TEMPLATE = (
@@ -39,6 +43,7 @@ class AppContext:
     result_cache: ResultCache | None = None
     web_dir: Path | None = None
     today: date | None = None
+    logger: logging.Logger | None = None
 
 
 def handle_api_request(
@@ -49,8 +54,11 @@ def handle_api_request(
     body: bytes,
 ) -> tuple[int, dict]:
     try:
-        return _handle_api_request(context, method, path, query, body)
+        status, payload = _handle_api_request(context, method, path, query, body)
+        _log_api_result(context, method, path, status, payload)
+        return status, payload
     except ValueError as exc:
+        _log_api_error(context, method, path, exc)
         return 400, {"error": str(exc)}
 
 
@@ -78,7 +86,12 @@ def _handle_api_request(
         return 200, {"portfolios": portfolio_names(trades, dividends)}
 
     if method == "GET" and path == "/api/defaults":
-        return 200, _default_dates(context.price_provider, context.today or date.today())
+        return 200, _default_dates(
+            context.price_provider,
+            context.today or date.today(),
+            store.list_trades(),
+            store.list_dividends(),
+        )
 
     if method == "GET" and path == "/api/templates/trades":
         return 200, {
@@ -110,23 +123,29 @@ def _handle_api_request(
             if not isinstance(record, dict):
                 raise ValueError(f"row {index}: record must be an object")
             try:
-                trades.append(Trade.from_dict(record))
+                trades.append((_source_row(record, index), Trade.from_dict(record)))
             except ValueError as exc:
                 raise ValueError(f"row {index}: {exc}") from exc
         existing_keys = {_trade_dedup_key(trade) for trade in store.list_trades()}
+        imported_keys = set()
         saved = []
-        skipped = 0
-        for trade in trades:
+        duplicate_records = []
+        for row_number, trade in trades:
             key = _trade_dedup_key(trade)
             if key in existing_keys:
-                skipped += 1
+                duplicate_records.append(_trade_duplicate_record(row_number, trade, "already_exists"))
+                continue
+            if key in imported_keys:
+                duplicate_records.append(_trade_duplicate_record(row_number, trade, "duplicate_in_file"))
                 continue
             saved.append(store.add_trade(trade))
-            existing_keys.add(key)
+            imported_keys.add(key)
         _clear_result_cache(context)
+        _log_import_result(context, "trade", len(saved), duplicate_records)
         return 201, {
             "imported_count": len(saved),
-            "skipped_duplicates": skipped,
+            "skipped_duplicates": len(duplicate_records),
+            "duplicate_records": duplicate_records,
             "trades": [trade.to_json() for trade in saved],
         }
 
@@ -146,23 +165,29 @@ def _handle_api_request(
             if not isinstance(record, dict):
                 raise ValueError(f"row {index}: record must be an object")
             try:
-                dividends.append(Dividend.from_dict(record))
+                dividends.append((_source_row(record, index), Dividend.from_dict(record)))
             except ValueError as exc:
                 raise ValueError(f"row {index}: {exc}") from exc
         existing_keys = {_dividend_dedup_key(dividend) for dividend in store.list_dividends()}
+        imported_keys = set()
         saved = []
-        skipped = 0
-        for dividend in dividends:
+        duplicate_records = []
+        for row_number, dividend in dividends:
             key = _dividend_dedup_key(dividend)
             if key in existing_keys:
-                skipped += 1
+                duplicate_records.append(_dividend_duplicate_record(row_number, dividend, "already_exists"))
+                continue
+            if key in imported_keys:
+                duplicate_records.append(_dividend_duplicate_record(row_number, dividend, "duplicate_in_file"))
                 continue
             saved.append(store.add_dividend(dividend))
-            existing_keys.add(key)
+            imported_keys.add(key)
         _clear_result_cache(context)
+        _log_import_result(context, "dividend", len(saved), duplicate_records)
         return 201, {
             "imported_count": len(saved),
-            "skipped_duplicates": skipped,
+            "skipped_duplicates": len(duplicate_records),
+            "duplicate_records": duplicate_records,
             "dividends": [dividend.to_json() for dividend in saved],
         }
 
@@ -203,6 +228,20 @@ def _handle_api_request(
         portfolio = _query_optional(query, "portfolio")
         currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
         return 200, analytics.summary(
+            store.list_trades(),
+            store.list_dividends(),
+            as_of,
+            portfolio=portfolio,
+            display_currency=currency,
+        )
+
+    if method == "GET" and path == "/api/overview":
+        as_of = parse_date(
+            _query_one(query, "as_of", (context.today or date.today()).isoformat()), "as_of"
+        )
+        portfolio = _query_optional(query, "portfolio")
+        currency = _query_one(query, "currency", DEFAULT_DISPLAY_CURRENCY)
+        return 200, analytics.overview(
             store.list_trades(),
             store.list_dividends(),
             as_of,
@@ -264,7 +303,12 @@ def _handle_api_request(
     return 404, {"error": "not found"}
 
 
-def _default_dates(price_provider: object, today: date) -> dict:
+def _default_dates(
+    price_provider: object,
+    today: date,
+    trades: list[Trade] | None = None,
+    dividends: list[Dividend] | None = None,
+) -> dict:
     start = date(today.year, 1, 1)
     search_start = today - timedelta(days=14)
     latest_market_day = None
@@ -279,11 +323,14 @@ def _default_dates(price_provider: object, today: date) -> dict:
             latest_market_day = max(latest_market_day, candidate) if latest_market_day else candidate
     if latest_market_day is None:
         latest_market_day = _previous_weekday(today)
+    activity_dates = [trade.date for trade in (trades or [])] + [dividend.date for dividend in (dividends or [])]
+    first_activity = min(activity_dates).isoformat() if activity_dates else None
     return {
         "today": today.isoformat(),
         "as_of": latest_market_day.isoformat(),
         "start": start.isoformat(),
         "end": today.isoformat(),
+        "first_activity": first_activity,
     }
 
 
@@ -292,6 +339,63 @@ def _previous_weekday(day: date) -> date:
     while current.weekday() >= 5:
         current -= timedelta(days=1)
     return current
+
+
+def create_file_logger(data_dir: str | Path) -> logging.Logger:
+    log_dir = Path(data_dir) / LOG_DIR_NAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / LOG_FILE_NAME
+    logger = logging.getLogger(f"finance_app.{log_file.resolve()}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not any(getattr(handler, "baseFilename", None) == str(log_file.resolve()) for handler in logger.handlers):
+        handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    return logger
+
+
+def _context_logger(context: AppContext) -> logging.Logger | None:
+    return context.logger
+
+
+def _log_api_result(context: AppContext, method: str, path: str, status: int, payload: dict) -> None:
+    logger = _context_logger(context)
+    if logger is None:
+        return
+    if status >= 400:
+        logger.warning("api_response method=%s path=%s status=%s payload=%s", method, path, status, payload)
+        return
+    logger.info("api_response method=%s path=%s status=%s", method, path, status)
+
+
+def _log_api_error(context: AppContext, method: str, path: str, error: Exception) -> None:
+    logger = _context_logger(context)
+    if logger is not None:
+        logger.warning("api_error method=%s path=%s error=%s", method, path, error)
+
+
+def _log_import_result(context: AppContext, kind: str, imported_count: int, duplicate_records: list[dict]) -> None:
+    logger = _context_logger(context)
+    if logger is None:
+        return
+    logger.info(
+        "import_result kind=%s imported=%s skipped_duplicates=%s",
+        kind,
+        imported_count,
+        len(duplicate_records),
+    )
+    for record in duplicate_records:
+        logger.warning(
+            "import_duplicate kind=%s row=%s reason=%s date=%s symbol=%s portfolio=%s currency=%s",
+            record.get("kind", kind),
+            record.get("row"),
+            record.get("reason"),
+            record.get("date"),
+            record.get("symbol"),
+            record.get("portfolio"),
+            record.get("currency"),
+        )
 
 
 def _records_payload(trades: list[Trade], dividends: list[Dividend], query: dict[str, list[str]]) -> dict:
@@ -364,6 +468,15 @@ def _records_payload_sql(store: SQLiteStore, query: dict[str, list[str]]) -> dic
     }
 
 
+def _source_row(record: dict, fallback: int) -> int:
+    value = record.get("_row_number", fallback)
+    try:
+        row_number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return row_number if row_number > 0 else fallback
+
+
 def _trade_dedup_key(trade: Trade) -> tuple[str, ...]:
     row = trade.to_row()
     return (
@@ -378,6 +491,22 @@ def _trade_dedup_key(trade: Trade) -> tuple[str, ...]:
     )
 
 
+def _trade_duplicate_record(row_number: int, trade: Trade, reason: str) -> dict:
+    return {
+        "row": row_number,
+        "kind": "trade",
+        "reason": reason,
+        "date": trade.date.isoformat(),
+        "symbol": trade.symbol,
+        "side": trade.side,
+        "quantity": trade.quantity,
+        "price": trade.price,
+        "fees": trade.fees,
+        "currency": trade.currency,
+        "portfolio": trade.portfolio,
+    }
+
+
 def _dividend_dedup_key(dividend: Dividend) -> tuple[str, ...]:
     row = dividend.to_row()
     return (
@@ -388,6 +517,20 @@ def _dividend_dedup_key(dividend: Dividend) -> tuple[str, ...]:
         row["currency"],
         row["portfolio"],
     )
+
+
+def _dividend_duplicate_record(row_number: int, dividend: Dividend, reason: str) -> dict:
+    return {
+        "row": row_number,
+        "kind": "dividend",
+        "reason": reason,
+        "date": dividend.date.isoformat(),
+        "symbol": dividend.symbol,
+        "gross_amount": dividend.gross_amount,
+        "tax": dividend.tax,
+        "currency": dividend.currency,
+        "portfolio": dividend.portfolio,
+    }
 
 
 def _trade_record(trade: Trade) -> dict:
@@ -494,13 +637,19 @@ class PortfolioRequestHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/"):
             length = int(self.headers.get("Content-Length", "0") or "0")
             body = self.rfile.read(length) if length else b""
-            status, payload = handle_api_request(
-                self.context,
-                self.command,
-                parsed.path,
-                parse_qs(parsed.query),
-                body,
-            )
+            try:
+                status, payload = handle_api_request(
+                    self.context,
+                    self.command,
+                    parsed.path,
+                    parse_qs(parsed.query),
+                    body,
+                )
+            except Exception:
+                logger = _context_logger(self.context)
+                if logger is not None:
+                    logger.exception("api_unhandled_error method=%s path=%s", self.command, parsed.path)
+                status, payload = 500, {"error": "internal server error"}
             self._send_json(status, payload)
             return
         self._serve_static(parsed.path)
@@ -540,16 +689,23 @@ class PortfolioRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def log_message(self, format: str, *args: object) -> None:
+        logger = _context_logger(self.context)
+        if logger is not None:
+            logger.info("http_access client=%s message=%s", self.address_string(), format % args)
+            return
         print(f"{self.address_string()} - {format % args}")
 
 
 def create_server(host: str, port: int, data_dir: str | Path) -> ThreadingHTTPServer:
     store = SQLiteStore(data_dir)
+    logger = create_file_logger(data_dir)
     context = AppContext(
         store=store,
         price_provider=YahooFinanceProvider(store.price_cache_dir),
         result_cache=JSONResultCache(store.result_cache_dir),
+        logger=logger,
     )
+    logger.info("server_start host=%s port=%s data_dir=%s", host, port, Path(data_dir))
 
     class Handler(PortfolioRequestHandler):
         pass

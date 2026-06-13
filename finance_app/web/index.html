@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>股票績效與配息追蹤</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260611-perf-metrics" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260613-import-duplicates" />
   </head>
   <body>
     <header class="app-header">
@@ -35,6 +35,12 @@
             <select id="currencyFilter">
               <option value="TWD">TWD</option>
               <option value="USD">USD</option>
+            </select>
+          </label>
+          <label>
+            範圍
+            <select id="rangeScope">
+              <option value="all">全部</option>
             </select>
           </label>
           <label>
@@ -276,6 +282,6 @@
     </main>
 
     <script src="/static/vendor/chart.umd.min.js"></script>
-    <script src="/static/app.js?v=20260611-perf-metrics"></script>
+    <script src="/static/app.js?v=20260613-import-duplicates"></script>
   </body>
 </html>

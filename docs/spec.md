@@ -84,6 +84,11 @@ date,symbol,gross_amount,tax,currency,portfolio,notes
 The import format is not the storage format; it is a user-facing batch entry
 format parsed by the WebUI and submitted to the API.
 
+Batch imports skip duplicate rows. Import responses include
+`skipped_duplicates` and `duplicate_records`; each duplicate record includes the
+CSV row number when available, kind, symbol, date, portfolio, currency, and a
+reason of `already_exists` or `duplicate_in_file`.
+
 ## Price Cache
 
 Files live in `price_cache/{symbol}/{year}.csv`, for example
@@ -100,6 +105,13 @@ are migrated into year files when read.
 Performance results live in `result_cache/{sha256}.json`. The cache key includes
 query parameters plus all trade and dividend records, so changing user records
 creates a different key. Record mutations also clear cached result files.
+
+## Backend Logs
+
+Backend logs live in `logs/app.log` under the selected data directory. The log
+is rotated when it reaches 1 MB, keeping three backups. Logged events include
+server start, HTTP access messages, API responses, API validation errors, and
+row-level duplicate records skipped during batch imports.
 
 ## Storage Boundary
 
@@ -161,12 +173,12 @@ When a report display currency is selected:
 | POST | `/api/trades` | creates a trade |
 | PUT | `/api/trades/{id}` | updates a trade |
 | GET | `/api/templates/trades` | returns a CSV template for trade batch import |
-| POST | `/api/import/trades` | imports multiple trade records from parsed CSV rows |
+| POST | `/api/import/trades` | imports multiple trade records and returns skipped duplicate details |
 | DELETE | `/api/trades/{id}` | deletes a trade |
 | POST | `/api/dividends` | creates a dividend |
 | PUT | `/api/dividends/{id}` | updates a dividend |
 | GET | `/api/templates/dividends` | returns a CSV template for dividend batch import |
-| POST | `/api/import/dividends` | imports multiple dividend records from parsed CSV rows |
+| POST | `/api/import/dividends` | imports multiple dividend records and returns skipped duplicate details |
 | DELETE | `/api/dividends/{id}` | deletes a dividend |
 | GET | `/api/portfolios` | returns available portfolio names |
 | GET | `/api/summary?as_of=YYYY-MM-DD&portfolio=Active&currency=TWD` | returns all-portfolio or selected-portfolio summary in a display currency |
@@ -213,3 +225,5 @@ When a report display currency is selected:
 23. Existing CSV records are imported into SQLite automatically when the SQLite database is empty.
 24. New and edited decimal amount fields accept six decimal places.
 25. New trade and dividend forms default to today's date.
+26. Batch imports report row-level duplicate details when records are skipped.
+27. Backend log files record skipped duplicate import rows for later auditing.

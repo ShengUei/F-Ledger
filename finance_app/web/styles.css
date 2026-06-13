@@ -566,6 +566,7 @@ tr:last-child td {
   min-height: 20px;
   color: var(--muted);
   font-size: 13px;
+  white-space: pre-line;
 }
 
 .records-panel header {

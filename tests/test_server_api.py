@@ -2,8 +2,9 @@ import json
 import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 
-from finance_app.server import AppContext, handle_api_request
+from finance_app.server import AppContext, create_file_logger, handle_api_request
 from finance_app.storage import SQLiteStore
 
 
@@ -152,7 +153,7 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual([position["symbol"] for position in payload["selected"]["positions"]], ["STOCKA"])
 
-    def test_period_summary_ignores_trades_before_start_date(self):
+    def test_period_summary_carries_forward_trades_before_start_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
 
@@ -193,8 +194,12 @@ class ServerAPITests(unittest.TestCase):
             )
 
             self.assertEqual(status, 200)
-            self.assertEqual([position["symbol"] for position in payload["positions"]], ["NEW"])
-            self.assertAlmostEqual(payload["market_value"], 180.0, places=2)
+            # OLD was opened before the window but is still held, so it is carried forward.
+            self.assertEqual(
+                sorted(position["symbol"] for position in payload["positions"]), ["NEW", "OLD"]
+            )
+            self.assertAlmostEqual(payload["market_value"], 1179.0, places=2)
+            # buy_cost is rebased to the window: only NEW's purchase counts.
             self.assertAlmostEqual(payload["buy_cost"], 180.0, places=2)
 
     def test_allocation_endpoint_returns_overall_and_portfolios(self):
@@ -418,6 +423,7 @@ class ServerAPITests(unittest.TestCase):
             context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
             records = [
                 {
+                    "_row_number": 2,
                     "date": "2024-01-02",
                     "symbol": "GOOG",
                     "side": "BUY",
@@ -428,6 +434,7 @@ class ServerAPITests(unittest.TestCase):
                     "portfolio": "Active",
                 },
                 {
+                    "_row_number": 3,
                     "date": "2024-01-03",
                     "symbol": "MSFT",
                     "side": "BUY",
@@ -444,11 +451,16 @@ class ServerAPITests(unittest.TestCase):
             self.assertEqual(status, 201)
             self.assertEqual(payload["imported_count"], 2)
             self.assertEqual(payload["skipped_duplicates"], 0)
+            self.assertEqual(payload["duplicate_records"], [])
 
             status, payload = handle_api_request(context, "POST", "/api/import/trades", {}, body)
             self.assertEqual(status, 201)
             self.assertEqual(payload["imported_count"], 0)
             self.assertEqual(payload["skipped_duplicates"], 2)
+            self.assertEqual([item["row"] for item in payload["duplicate_records"]], [2, 3])
+            self.assertEqual({item["reason"] for item in payload["duplicate_records"]}, {"already_exists"})
+            self.assertEqual(payload["duplicate_records"][0]["symbol"], "GOOG")
+            self.assertEqual(payload["duplicate_records"][0]["portfolio"], "Active")
             self.assertEqual(len(context.store.list_trades()), 2)
 
             duplicated_batch = json.dumps({"records": [records[0], records[0]]}).encode("utf-8")
@@ -460,6 +472,7 @@ class ServerAPITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider())
             record = {
+                "_row_number": 2,
                 "date": "2024-02-01",
                 "symbol": "GOOG",
                 "gross_amount": "10",
@@ -467,13 +480,48 @@ class ServerAPITests(unittest.TestCase):
                 "currency": "USD",
                 "portfolio": "Active",
             }
-            body = json.dumps({"records": [record, record]}).encode("utf-8")
+            duplicate_record = {**record, "_row_number": 3}
+            body = json.dumps({"records": [record, duplicate_record]}).encode("utf-8")
 
             status, payload = handle_api_request(context, "POST", "/api/import/dividends", {}, body)
             self.assertEqual(status, 201)
             self.assertEqual(payload["imported_count"], 1)
             self.assertEqual(payload["skipped_duplicates"], 1)
+            self.assertEqual(payload["duplicate_records"][0]["row"], 3)
+            self.assertEqual(payload["duplicate_records"][0]["reason"], "duplicate_in_file")
+            self.assertEqual(payload["duplicate_records"][0]["symbol"], "GOOG")
             self.assertEqual(len(context.store.list_dividends()), 1)
+
+    def test_import_duplicates_are_written_to_log_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger = create_file_logger(temp_dir)
+            context = AppContext(SQLiteStore(temp_dir), NoopPriceProvider(), logger=logger)
+            record = {
+                "_row_number": 2,
+                "date": "2024-01-02",
+                "symbol": "GOOG",
+                "side": "BUY",
+                "quantity": "10",
+                "price": "100",
+                "fees": "1",
+                "currency": "USD",
+                "portfolio": "Active",
+            }
+            body = json.dumps({"records": [record, {**record, "_row_number": 3}]}).encode("utf-8")
+
+            status, payload = handle_api_request(context, "POST", "/api/import/trades", {}, body)
+            for handler in logger.handlers:
+                handler.flush()
+
+            self.assertEqual(status, 201)
+            self.assertEqual(payload["skipped_duplicates"], 1)
+            log_text = (Path(temp_dir) / "logs" / "app.log").read_text(encoding="utf-8")
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+            self.assertIn("import_result kind=trade imported=1 skipped_duplicates=1", log_text)
+            self.assertIn("import_duplicate kind=trade row=3 reason=duplicate_in_file", log_text)
+            self.assertIn("symbol=GOOG", log_text)
 
     def test_performance_cache_uses_data_version_token(self):
         from finance_app.cache import JSONResultCache

@@ -4,6 +4,7 @@ const state = {
   interval: "monthly",
   portfolios: [],
   records: { trades: [], dividends: [] },
+  overview: null,
   summary: null,
   performance: { points: [], annual: [] },
   allocation: null,
@@ -11,6 +12,7 @@ const state = {
   view: "dashboard",
   editingRecord: null,
   defaultRecordDate: "",
+  firstActivity: null,
   recordsVisible: false,
   recordPage: 1,
 };
@@ -327,9 +329,59 @@ function setDefaultDates(defaults = null) {
   byId("asOfInput").value = defaults?.as_of || toInputDate(fallbackAsOf);
   byId("endInput").value = defaults?.end || toInputDate(today);
   byId("startInput").value = defaults?.start || toInputDate(fallbackStart);
+  state.firstActivity = defaults?.first_activity || null;
+  populateRangeScope();
   document.querySelectorAll("form input[name='date']").forEach((input) => {
     input.value = state.defaultRecordDate;
   });
+}
+
+// Fills the 範圍 dropdown with 全部 + each year from the first activity to now.
+// Defaults to the current year (matching the default 今年 date range); preserves the
+// user's choice on subsequent refreshes.
+function populateRangeScope() {
+  const select = byId("rangeScope");
+  if (!select) {
+    return;
+  }
+  const currentYear = new Date().getFullYear();
+  const desired = select.dataset.populated ? select.value : String(currentYear);
+  const firstYear = state.firstActivity ? Number(state.firstActivity.slice(0, 4)) : currentYear;
+  const startYear = Math.min(firstYear, currentYear);
+  const options = ['<option value="all">全部</option>'];
+  for (let year = currentYear; year >= startYear; year -= 1) {
+    options.push(`<option value="${year}">${year === currentYear ? `今年（${year}）` : year}</option>`);
+  }
+  select.innerHTML = options.join("");
+  select.value = desired;
+  if (!select.value) {
+    select.value = String(currentYear);
+  }
+  select.dataset.populated = "true";
+}
+
+// Translates the 範圍 selection into start/end (and as_of) dates, then reloads.
+// 全部 spans the first activity to today; a year spans Jan 1 to Dec 31 (or today for
+// the current year). The start/end inputs stay editable for manual fine-tuning.
+function applyRangeScope() {
+  const select = byId("rangeScope");
+  if (!select) {
+    return;
+  }
+  const today = new Date();
+  const todayStr = toInputDate(today);
+  if (select.value === "all") {
+    byId("startInput").value = state.firstActivity || toInputDate(new Date(today.getFullYear(), 0, 1));
+    byId("endInput").value = todayStr;
+    byId("asOfInput").value = todayStr;
+  } else {
+    const year = Number(select.value);
+    const end = year === today.getFullYear() ? todayStr : `${year}-12-31`;
+    byId("startInput").value = `${year}-01-01`;
+    byId("endInput").value = end;
+    byId("asOfInput").value = end;
+  }
+  refreshData();
 }
 
 async function refreshDefaultDates() {
@@ -348,6 +400,7 @@ function bindEvents() {
   ["asOfInput", "startInput", "endInput", "portfolioFilter", "currencyFilter"].forEach((id) => {
     byId(id).addEventListener("change", refreshData);
   });
+  byId("rangeScope").addEventListener("change", applyRangeScope);
 
   ["performanceXAxisMode", "performanceYAxisMode", "annualXAxisMode", "annualYAxisMode"].forEach((id) => {
     byId(id).addEventListener("change", renderPerformance);
@@ -435,7 +488,7 @@ async function runRefresh(task) {
 }
 
 async function refreshDashboardData() {
-  const tasks = [refreshSummary().then(refreshAllocation), refreshPerformance()];
+  const tasks = [refreshOverview(), refreshSummary().then(refreshAllocation), refreshPerformance()];
   if (state.recordsVisible) {
     tasks.push(refreshRecords());
   }
@@ -456,6 +509,12 @@ async function refreshRecords() {
   state.records = await apiGet(`/api/records?${recordQuery()}`);
   state.recordPage = state.records.page || state.recordPage;
   renderRecords();
+}
+
+async function refreshOverview() {
+  // Fixed headline KPIs (all-time + YTD); independent of the 範圍 date selector.
+  state.overview = await apiGet(`/api/overview?${currencyQuery().slice(1)}${portfolioQuery()}`);
+  renderOverview();
 }
 
 async function refreshSummary() {
@@ -661,23 +720,34 @@ async function importDividendsFromFile() {
   }
 }
 
+// Fixed headline KPIs shown like a broker dashboard. Total return / market value /
+// annualized / dividends are all-time; YTD and realized cover the current year. These do
+// NOT follow the 範圍 selector (which only drives the charts and holdings below).
+function renderOverview() {
+  const overview = state.overview;
+  if (!overview) {
+    return;
+  }
+  const currency = overview.currency || reportCurrency();
+  const year = overview.year;
+  byId("metricGrid").innerHTML = [
+    metric("總報酬率", pct(overview.total_return_pct), `${signedMoney(overview.total_gain, currency)} · 全部`, overview.total_gain),
+    metric("YTD績效", signedMoney(overview.ytd_gain, currency), `${pct(overview.ytd_return_pct)} · ${year}`, overview.ytd_gain),
+    metric("今年已實現", signedMoney(overview.ytd_realized_gain, currency), `${year} 落袋 · ${currency}`, overview.ytd_realized_gain),
+    metric("總市值", money(overview.market_value, currency), `目前持有 · ${currency}`, overview.market_value),
+    metric(
+      "年化報酬率",
+      overview.annualized_return_pct == null ? "—" : pct(overview.annualized_return_pct),
+      "XIRR · 全部",
+      overview.annualized_return_pct,
+    ),
+    metric("累計配息", money(overview.dividends, currency), `稅後 · ${currency}`, overview.dividends),
+  ].join("");
+}
+
 function renderSummary() {
   const summary = state.summary || {};
   const currency = summary.currency || reportCurrency();
-  const rangeText = `${summary.start || byId("startInput").value} ~ ${summary.end || byId("endInput").value}`;
-  byId("metricGrid").innerHTML = [
-    metric("市值", money(summary.market_value, currency), `訖日持有 · ${rangeText}`, summary.market_value),
-    metric("總損益", signedMoney(summary.total_gain, currency), `${pct(summary.return_pct)} · 區間`, summary.total_gain),
-    metric("已實現", signedMoney(summary.realized_gain, currency), `區間已實現 · ${currency}`, summary.realized_gain),
-    metric("賣出損益", signedMoney(summary.sell_gain, currency), `區間賣出 · ${currency}`, summary.sell_gain),
-    metric("累計配息", money(summary.dividends, currency), `區間稅後 · ${currency}`, summary.dividends),
-    metric(
-      "年化報酬率",
-      summary.annualized_return_pct == null ? "—" : pct(summary.annualized_return_pct),
-      "XIRR · 區間",
-      summary.annualized_return_pct,
-    ),
-  ].join("");
 
   const rows = summary.positions || [];
   byId("positionsBody").innerHTML = rows.length
@@ -1076,6 +1146,7 @@ function parseTradeImportCSV(text) {
           record[header] = row[columnIndex] || "";
         }
       });
+      record._row_number = index + 2;
       if (!record.fees) {
         record.fees = "0";
       }
@@ -1119,6 +1190,7 @@ function parseDividendImportCSV(text) {
           record[header] = row[columnIndex] || "";
         }
       });
+      record._row_number = index + 2;
       if (!record.tax) {
         record.tax = "0";
       }
@@ -1203,10 +1275,33 @@ function setFormError(form, message) {
   element.hidden = !message;
 }
 
-function importResultText(label, payload) {
+function importResultTextLegacy(label, payload) {
   const skipped = payload.skipped_duplicates || 0;
   const base = `已匯入 ${payload.imported_count} 筆${label}`;
   return skipped ? `${base}，略過 ${skipped} 筆重複` : base;
+}
+
+function importResultText(label, payload) {
+  const skipped = payload.skipped_duplicates || 0;
+  const base = `已匯入 ${payload.imported_count} 筆${label}`;
+  if (!skipped) {
+    return base;
+  }
+  const duplicates = payload.duplicate_records || [];
+  const details = duplicates.slice(0, 10).map((item) => {
+    const reason = duplicateReasonLabel(item.reason);
+    const portfolio = item.portfolio ? ` / ${item.portfolio}` : "";
+    return `第 ${item.row} 列：${item.date} ${item.symbol}${portfolio}，${reason}`;
+  });
+  const suffix = duplicates.length > details.length ? `\n另有 ${duplicates.length - details.length} 筆重複未列出` : "";
+  return `${base}，略過 ${skipped} 筆重複\n${details.join("\n")}${suffix}`;
+}
+
+function duplicateReasonLabel(reason) {
+  if (reason === "duplicate_in_file") {
+    return "同一檔案內重複";
+  }
+  return "已存在";
 }
 
 function setImportStatus(message) {

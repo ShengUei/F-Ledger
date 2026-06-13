@@ -20,6 +20,7 @@ caches under `data/`.
 - Switch report display currency between TWD and USD.
 - Default dates use the current year start, today as range end, and the latest available trading day as the settlement date.
 - Download trade and dividend import templates and upload CSV files to add many records at once.
+- Show row-level duplicate details when batch imports skip existing records.
 - Filter and paginate records on the records management page.
 - No Redis, ELK, external database server, or external service is required.
 
@@ -42,6 +43,7 @@ Runtime files are created under `data/` by default:
 
 - `data/portfolio.sqlite3`
 - `data/metadata.json`
+- `data/logs/app.log`
 - `data/price_cache/{symbol}/{year}.csv`
 - `data/result_cache/{sha256}.json`
 
@@ -57,6 +59,9 @@ valuation-date rates for current market value.
 `data/metadata.json` stores the current storage schema version. `SQLiteStore`
 implements the `StorageBackend` protocol, so future storage changes can stay
 behind the same storage boundary without rewriting analytics or the WebUI.
+
+Backend logs are written to `data/logs/app.log`. The log includes server start,
+API responses, API validation errors, and batch-import duplicate rows.
 
 ## Trade Import
 
